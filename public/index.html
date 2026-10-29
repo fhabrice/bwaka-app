@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bwaka — La marketplace de la RDC</title>
+  <meta name="description" content="Bwaka, la plateforme de vente en ligne en République Démocratique du Congo. Inscrivez-vous comme membre et vendez vos produits partout en RDC." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230A5FD6'/%3E%3Ccircle cx='16' cy='16' r='7' fill='%23F5C518'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <header class="entete">
+    <div class="conteneur entete-ligne">
+      <a href="#/" class="logo" aria-label="Bwaka - Accueil">
+        <span class="logo-marque" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="34" height="34"><circle cx="16" cy="16" r="15" fill="#0A5FD6"/><circle cx="16" cy="16" r="7.5" fill="#F5C518"/><path d="M16 8.5l1.6 3.3 3.6.5-2.6 2.6.6 3.6-3.2-1.7-3.2 1.7.6-3.6-2.6-2.6 3.6-.5z" fill="#0A5FD6"/></svg>
+        </span>
+        <span class="logo-texte">Bwaka<span class="logo-point">.cd</span></span>
+      </a>
+
+      <form class="recherche-entete" id="form-recherche-entete" role="search">
+        <input type="search" id="champ-recherche-entete" placeholder="Rechercher un produit, une catégorie…" aria-label="Rechercher" />
+        <button type="submit" class="btn btn-primaire" aria-label="Lancer la recherche">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        </button>
+      </form>
+
+      <nav class="nav-entete" id="nav-entete" aria-label="Navigation principale">
+        <a href="#/" class="nav-lien">Accueil</a>
+        <a href="#/vendre" class="btn btn-jaune">Vendre</a>
+        <a href="#/panier" class="nav-lien nav-panier" id="lien-panier">
+          <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1.4"/><circle cx="19" cy="21" r="1.4"/><path d="M2.5 3h2.2l2.4 12.2a1.8 1.8 0 0 0 1.8 1.5h9.3a1.8 1.8 0 0 0 1.8-1.4L22 8H6"/></svg>
+          <span class="badge-panier" id="badge-panier" hidden>0</span>
+        </a>
+        <div id="zone-compte"></div>
+      </nav>
+
+      <button class="burger" id="btn-burger" aria-label="Ouvrir le menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+    <div class="barre-categories" id="barre-categories"></div>
+  </header>
+
+  <main id="app" class="conteneur" aria-live="polite"></main>
+
+  <footer class="pied">
+    <div class="conteneur pied-grille">
+      <div>
+        <div class="logo logo-pied">
+          <span class="logo-marque" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="30" height="30"><circle cx="16" cy="16" r="15" fill="#0A5FD6"/><circle cx="16" cy="16" r="7.5" fill="#F5C518"/></svg>
+          </span>
+          <span class="logo-texte">Bwaka<span class="logo-point">.cd</span></span>
+        </div>
+        <p class="pied-texte">La plateforme de vente en ligne ouverte à tous en République Démocratique du Congo. Inscrivez-vous comme membre et commencez à vendre en quelques minutes.</p>
+      </div>
+      <div>
+        <h4>Plateforme</h4>
+        <a href="#/">Accueil</a>
+        <a href="#/vendre">Vendre sur Bwaka</a>
+        <a href="#/mes-commandes">Mes commandes</a>
+        <a href="#/inscription">Devenir membre</a>
+      </div>
+      <div>
+        <h4>Catégories</h4>
+        <a href="#/?categorie=Électronique">Électronique</a>
+        <a href="#/?categorie=Mode%20%26%20Vêtements">Mode & Vêtements</a>
+        <a href="#/?categorie=Alimentation">Alimentation</a>
+        <a href="#/?categorie=Maison%20%26%20Énergie">Maison & Énergie</a>
+      </div>
+      <div>
+        <h4>Paiements acceptés</h4>
+        <p class="pied-texte">M-Pesa · Orange Money · Airtel Money · Africell Money · Paiement à la livraison</p>
+        <h4 style="margin-top:14px">Contact</h4>
+        <p class="pied-texte">Goma, Nord-Kivu, RDC<br/>contact@bwaka.cd</p>
+      </div>
+    </div>
+    <div class="conteneur pied-bas">
+      <span>© 2026 Bwaka.cd — Tous droits réservés</span>
+      <span>Fait avec ❤️ en RDC</span>
+    </div>
+  </footer>
+
+  <div class="toast-zone" id="toast-zone" aria-live="assertive"></div>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/views.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
