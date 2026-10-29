@@ -26,6 +26,12 @@ npm start
 
 Ouvrez ensuite **http://localhost:3000**.
 
+### Test de rendu
+
+```bash
+node test-rendu.js   # vérifie le rendu de toutes les pages (headless)
+```
+
 ### Comptes de démonstration
 Mot de passe commun : `demo123`
 
