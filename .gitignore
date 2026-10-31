@@ -1,5 +1,25 @@
 node_modules/
-data/
+.next/
+out/
+build/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Variables d'environnement (ne jamais committer les clés)
+.env
+.env.local
+.env*.local
+
+# Base de démonstration locale (mode sans Supabase)
+.data/
+.arena/
+
+# Artefacts TypeScript / Next
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Uploads locaux
 public/uploads/*
 !public/uploads/.gitkeep
-*.log
