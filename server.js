@@ -369,6 +369,14 @@ app.get('/api/stats', requireAuth, (req, res) => {
 
 app.use('/api', (req, res) => res.status(404).json({ erreur: 'Route inconnue' }));
 
+// ---------- SPA : renvoie l'application pour toute autre route ----------
+// Permet l'accès direct et le rafraîchissement sur n'importe quelle URL
+// (ex. /panier, /produit/123) sans page 404 du serveur.
+app.get(/^\/(?!api\/).*$/, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Bwaka Marketplace démarré sur http://0.0.0.0:${PORT}`);
 });

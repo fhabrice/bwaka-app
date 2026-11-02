@@ -1,0 +1,10 @@
+[build]
+  publish = "public"
+
+# Application monopage : toute URL non trouvée renvoie index.html,
+# puis le routeur client (hash #/) affiche la bonne page.
+# Évite la page "Page not found" par défaut de Netlify sur les liens directs.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
