@@ -29,7 +29,10 @@ function majZoneCompte() {
       liste.hidden = !liste.hidden;
       btn.setAttribute('aria-expanded', String(!liste.hidden));
     });
-    document.getElementById('btn-deconnexion')?.addEventListener('click', () => {
+    document.getElementById('btn-deconnexion')?.addEventListener('click', async () => {
+      try {
+        if (window.auth) await window.auth.signOut();
+      } catch {}
       Etat.token = null;
       Etat.utilisateur = null;
       sauverSession();
@@ -95,14 +98,6 @@ async function router() {
     app.innerHTML = await vue.rendre(params, chemin);
     if (vue.apres) vue.apres(params, chemin);
   } catch (err) {
-    if (err.status === 401) {
-      Etat.token = null;
-      Etat.utilisateur = null;
-      sauverSession();
-      majZoneCompte();
-      location.hash = '#/connexion';
-      return;
-    }
     app.innerHTML = `<div class="page-vide" style="margin-top:40px"><div class="grand">⚠️</div><h3>Une erreur est survenue</h3><p>${e(err.message)}</p><a class="btn btn-primaire" href="#/">Retour à l'accueil</a></div>`;
   }
 
@@ -112,14 +107,12 @@ async function router() {
 
 /* ============ Actions globales (délégation) ============ */
 document.addEventListener('click', async (ev) => {
-  // Fermer le menu compte au clic extérieur
   const liste = document.getElementById('menu-compte-liste');
   if (liste && !liste.hidden && !ev.target.closest('.menu-compte')) liste.hidden = true;
 
   const cible = ev.target.closest('[data-ajouter-panier],[data-acheter-maintenant],[data-panier-plus],[data-panier-moins],[data-panier-retirer],[data-supprimer-produit],[data-statut]');
   if (!cible) return;
 
-  // Ajouter au panier
   const idAjout = cible.getAttribute('data-ajouter-panier');
   const idAchat = cible.getAttribute('data-acheter-maintenant');
   if (idAjout || idAchat) {
@@ -134,7 +127,6 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // Quantités panier
   const plus = cible.getAttribute('data-panier-plus');
   const moins = cible.getAttribute('data-panier-moins');
   const retirer = cible.getAttribute('data-panier-retirer');
@@ -151,7 +143,6 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // Supprimer un produit
   const idSuppr = cible.getAttribute('data-supprimer-produit');
   if (idSuppr) {
     if (!confirm('Voulez-vous vraiment supprimer ce produit ?')) return;
@@ -165,7 +156,6 @@ document.addEventListener('click', async (ev) => {
     return;
   }
 
-  // Changer le statut d'une commande
   const statut = cible.getAttribute('data-statut');
   if (statut) {
     const [id, nouveau] = statut.split('|');
@@ -185,7 +175,7 @@ document.addEventListener('click', async (ev) => {
 /* Recherche dans l'en-tête */
 document.getElementById('form-recherche-entete')?.addEventListener('submit', (ev) => {
   ev.preventDefault();
-  const q = document.getElementById('champ-recherche-entete').value.trim();
+  const q = document.getElementById('champ-recherche-entete')?.value.trim();
   const nouveau = q ? `#/?q=${encodeURIComponent(q)}` : '#/';
   if (location.hash === nouveau) router();
   else location.hash = nouveau;
@@ -202,11 +192,30 @@ document.getElementById('btn-burger')?.addEventListener('click', () => {
 /* ============ Démarrage ============ */
 (async function init() {
   try {
-    Etat.referentiels = await api('/api/referentiels');
-    if (Etat.token) {
-      const { utilisateur } = await api('/api/auth/moi');
-      Etat.utilisateur = utilisateur;
-      sauverSession();
+    Etat.referentiels = chargerReferentiels();
+    if (window.auth) {
+      await new Promise((resolve) => {
+        const unsub = window.auth.onAuthStateChanged((user) => {
+          unsub();
+          if (user) {
+            api('/api/auth/moi')
+              .then(({ utilisateur }) => {
+                Etat.utilisateur = utilisateur;
+                sauverSession();
+                resolve();
+              })
+              .catch(() => {
+                Etat.utilisateur = null;
+                sauverSession();
+                resolve();
+              });
+          } else {
+            Etat.utilisateur = null;
+            sauverSession();
+            resolve();
+          }
+        });
+      });
     }
   } catch {
     Etat.token = null;
