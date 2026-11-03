@@ -1,20 +1,18 @@
 'use strict';
 
 /* ============ Configuration Firebase ============
-   PROJET : bwaka-ac664 (visible dans votre console Firebase)
-   
-   Remplacez les valeurs ci-dessous par celles de votre projet Firebase.
-   Elles se trouvent dans la Console Firebase >
-   Paramètres du projet > Vos applications > SDK Firebase > Configuration
-   (bouton </> Config). */
+   PROJET : bwaka-ac664
+   Remplacez ces valeurs si nécessaire depuis la Console Firebase >
+   Paramètres du projet > Vos applications > SDK Firebase > Configuration. */
 
 const firebaseConfig = {
-  apiKey: '',        // <-- À remplir (ex: "AIzaSy...")
+  apiKey: 'AIzaSyB1r8E4fYS2N7s1qYJeQbmHJ244iT1CYfo',
   authDomain: 'bwaka-ac664.firebaseapp.com',
   projectId: 'bwaka-ac664',
-  storageBucket: 'bwaka-ac664.appspot.com',
-  messagingSenderId: '', // <-- À remplir
-  appId: '',         // <-- À remplir (ex: "1:...:web:...")
+  storageBucket: 'bwaka-ac664.firebasestorage.app',
+  messagingSenderId: '117703150598',
+  appId: '1:117703150598:web:7f2db2aa6796d69b4f0787',
+  measurementId: 'G-CYLHK75M6W'
 };
 
 let app = null;
