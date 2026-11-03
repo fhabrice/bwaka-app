@@ -1,24 +1,20 @@
 'use strict';
 
 /* ============ Configuration Firebase ============
+   PROJET : bwaka-ac664 (visible dans votre console Firebase)
+   
    Remplacez les valeurs ci-dessous par celles de votre projet Firebase.
    Elles se trouvent dans la Console Firebase >
-   Paramètres du projet > Vos applications > SDK Firebase > Configuration. */
+   Paramètres du projet > Vos applications > SDK Firebase > Configuration
+   (bouton </> Config). */
 
 const firebaseConfig = {
-  // Exemple à remplacer :
-  // apiKey: "AIzaSy...",
-  // authDomain: "bwaka-app.firebaseapp.com",
-  // projectId: "bwaka-app",
-  // storageBucket: "bwaka-app.appspot.com",
-  // messagingSenderId: "123456789012",
-  // appId: "1:123456789012:web:abcdef012345678",
-  apiKey: '',
-  authDomain: '',
-  projectId: '',
-  storageBucket: '',
-  messagingSenderId: '',
-  appId: '',
+  apiKey: '',        // <-- À remplir (ex: "AIzaSy...")
+  authDomain: 'bwaka-ac664.firebaseapp.com',
+  projectId: 'bwaka-ac664',
+  storageBucket: 'bwaka-ac664.appspot.com',
+  messagingSenderId: '', // <-- À remplir
+  appId: '',         // <-- À remplir (ex: "1:...:web:...")
 };
 
 let app = null;
@@ -27,7 +23,7 @@ let auth = null;
 let storage = null;
 
 function initialiserFirebase() {
-  if (!firebaseConfig.projectId || firebaseConfig.projectId === '') {
+  if (!firebaseConfig.apiKey || firebaseConfig.apiKey === '') {
     console.warn('Firebase non configuré : remplissez public/js/firebase-config.js');
     return;
   }
