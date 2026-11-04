@@ -12,28 +12,33 @@ const firebaseConfig = {
   storageBucket: 'bwaka-ac664.firebasestorage.app',
   messagingSenderId: '117703150598',
   appId: '1:117703150598:web:7f2db2aa6796d69b4f0787',
-  measurementId: 'G-CYLHK75M6W'
+  measurementId: 'G-CYLHK75M6W',
 };
 
-let app = null;
-let db = null;
-let auth = null;
-let storage = null;
+window.firebaseConfig = firebaseConfig;
 
 function initialiserFirebase() {
-  if (!firebaseConfig.apiKey || firebaseConfig.apiKey === '') {
+  // Respecte d'éventuelles instances pré-injectées (ex. tests automatisés)
+  if (window.db && window.auth) return;
+
+  if (!firebaseConfig.apiKey) {
     console.warn('Firebase non configuré : remplissez public/js/firebase-config.js');
     return;
   }
-  app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  auth = getAuth(app);
-  storage = getStorage(app);
 
-  // Exposition globale pour les autres scripts (pas de bundler dans ce projet)
-  window.db = db;
-  window.auth = auth;
-  window.storage = storage;
+  if (typeof window.firebase === 'undefined' || typeof window.firebase.initializeApp !== 'function') {
+    console.warn('SDK Firebase non chargé (mode hors-ligne ou CDN inaccessible).');
+    return;
+  }
+
+  const app = window.firebase.apps && window.firebase.apps.length > 0
+    ? window.firebase.app()
+    : window.firebase.initializeApp(firebaseConfig);
+
+  window.firebaseApp = app;
+  window.db = window.firebase.firestore();
+  window.auth = window.firebase.auth();
+  window.storage = typeof window.firebase.storage === 'function' ? window.firebase.storage() : null;
 }
 
 initialiserFirebase();

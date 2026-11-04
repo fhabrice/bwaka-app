@@ -31,7 +31,9 @@ function majZoneCompte() {
     });
     document.getElementById('btn-deconnexion')?.addEventListener('click', async () => {
       try {
-        if (window.auth) await window.auth.signOut();
+        if (window.auth && typeof window.auth.signOut === 'function') {
+          await window.auth.signOut();
+        }
       } catch {}
       Etat.token = null;
       Etat.utilisateur = null;
@@ -110,8 +112,28 @@ document.addEventListener('click', async (ev) => {
   const liste = document.getElementById('menu-compte-liste');
   if (liste && !liste.hidden && !ev.target.closest('.menu-compte')) liste.hidden = true;
 
-  const cible = ev.target.closest('[data-ajouter-panier],[data-acheter-maintenant],[data-panier-plus],[data-panier-moins],[data-panier-retirer],[data-supprimer-produit],[data-statut]');
+  const cible = ev.target.closest(
+    '[data-ajouter-panier],[data-acheter-maintenant],[data-panier-plus],[data-panier-moins],[data-panier-retirer],[data-supprimer-produit],[data-statut],[data-importer-demo]'
+  );
   if (!cible) return;
+
+  if (cible.hasAttribute('data-importer-demo')) {
+    cible.disabled = true;
+    try {
+      const { importes } = await api('/api/produits/demo', { method: 'POST' });
+      toast(
+        importes > 0
+          ? `${importes} produit(s) de démonstration importés dans le catalogue !`
+          : 'Les produits de démonstration sont déjà présents dans votre boutique.',
+        'succes'
+      );
+      router();
+    } catch (err) {
+      toast(err.message, 'erreur');
+      cible.disabled = false;
+    }
+    return;
+  }
 
   const idAjout = cible.getAttribute('data-ajouter-panier');
   const idAchat = cible.getAttribute('data-acheter-maintenant');
@@ -191,37 +213,43 @@ document.getElementById('btn-burger')?.addEventListener('click', () => {
 
 /* ============ Démarrage ============ */
 (async function init() {
-  try {
-    Etat.referentiels = chargerReferentiels();
-    if (window.auth) {
-      await new Promise((resolve) => {
-        const unsub = window.auth.onAuthStateChanged((user) => {
-          unsub();
-          if (user) {
-            api('/api/auth/moi')
-              .then(({ utilisateur }) => {
+  Etat.referentiels = chargerReferentiels();
+
+  if (window.auth && typeof window.auth.onAuthStateChanged === 'function') {
+    try {
+      await Promise.race([
+        new Promise((resolve) => {
+          let initial = true;
+          window.auth.onAuthStateChanged(async (user) => {
+            if (user) {
+              try {
+                const { utilisateur } = await api('/api/auth/moi');
                 Etat.utilisateur = utilisateur;
                 sauverSession();
-                resolve();
-              })
-              .catch(() => {
-                Etat.utilisateur = null;
-                sauverSession();
-                resolve();
-              });
-          } else {
-            Etat.utilisateur = null;
-            sauverSession();
-            resolve();
-          }
-        });
-      });
+              } catch {
+                // Conserve la session locale éventuelle si hors-ligne temporaire
+              }
+            } else {
+              Etat.token = null;
+              Etat.utilisateur = null;
+              sauverSession();
+            }
+            majZoneCompte();
+            if (initial) {
+              initial = false;
+              resolve();
+            }
+          });
+        }),
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
+    } catch {
+      Etat.token = null;
+      Etat.utilisateur = null;
+      sauverSession();
     }
-  } catch {
-    Etat.token = null;
-    Etat.utilisateur = null;
-    sauverSession();
   }
+
   majZoneCompte();
   majBadgePanier();
   majBarreCategories();

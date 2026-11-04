@@ -3,43 +3,52 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ---------- Profils utilisateurs ----------
-    // Lecture publique, écriture réservée au propriétaire du profil.
+    // Lecture publique (affichage du nom/ville du vendeur), écriture réservée au propriétaire.
     match /profils/{userId} {
       allow read: if true;
-      allow create: if request.auth != null && request.auth.uid == userId;
-      allow update, delete: if request.auth != null && request.auth.uid == userId;
+      allow create, update, delete: if request.auth != null && request.auth.uid == userId;
     }
 
     // ---------- Produits ----------
-    // Lecture publique (catalogue), écriture réservée au vendeur du produit.
+    // Lecture publique (catalogue).
+    // Création, suppression et modification complète réservées au vendeur propriétaire.
+    // Mise à jour du stock uniquement (quantite, statut) autorisée aux membres authentifiés
+    // lors d'une commande ou d'une annulation de commande.
     match /produits/{produitId} {
       allow read: if true;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.vendeurId;
-      allow update: if request.auth != null
-        && request.auth.uid == resource.data.vendeurId;
+      allow update: if request.auth != null && (
+        request.auth.uid == resource.data.vendeurId
+        || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['quantite', 'statut'])
+          && request.resource.data.quantite is number
+          && request.resource.data.quantite >= 0
+          && request.resource.data.statut in ['actif', 'inactif']
+        )
+      );
       allow delete: if request.auth != null
         && request.auth.uid == resource.data.vendeurId;
     }
 
     // ---------- Commandes ----------
-    // Lecture si acheteur ou l'un des vendeurs impliqués.
-    // Création réservée à l'acheteur.
-    // Mise à jour (statut) réservée à l'acheteur ou aux vendeurs.
+    // Lecture et mise à jour du statut par l'acheteur ou l'un des vendeurs impliqués.
     match /commandes/{commandeId} {
-      allow read: if request.auth != null
-        && (request.auth.uid == resource.data.acheteurId
-            || request.auth.uid in (resource.data.vendeurIds || []));
+      allow read: if request.auth != null && (
+        request.auth.uid == resource.data.acheteurId
+        || ('vendeurIds' in resource.data && request.auth.uid in resource.data.vendeurIds)
+      );
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.acheteurId;
-      allow update: if request.auth != null
-        && (request.auth.uid == resource.data.acheteurId
-            || request.auth.uid in (resource.data.vendeurIds || []));
+      allow update: if request.auth != null && (
+        request.auth.uid == resource.data.acheteurId
+        || ('vendeurIds' in resource.data && request.auth.uid in resource.data.vendeurIds)
+      );
       allow delete: if false;
     }
 
     // ---------- Compteur de numéros de commande ----------
-    match /compteurs/{doc} {
+    match /compteurs/{docId} {
       allow read, write: if request.auth != null;
     }
   }

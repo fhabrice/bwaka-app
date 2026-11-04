@@ -2,7 +2,7 @@
 
 Plateforme de vente en ligne en République Démocratique du Congo, **ouverte à toute personne qui veut vendre après s'être inscrite comme membre**.
 
-Cette version utilise **Firebase** comme backend (authentification, base de données Firestore, stockage d'images) et peut être hébergée sur n'importe quel hébergement statique (Netlify, Firebase Hosting, GitHub Pages…). Il n'y a **plus de serveur Express** : le frontend appelle Firebase directement depuis le navigateur.
+Cette version utilise **Firebase (`bwaka-ac664`)** comme backend (authentification, base de données Cloud Firestore, stockage d'images avec repli automatique) et fonctionne sur n'importe quel hébergement statique (**Netlify**, **Firebase Hosting**, **GitHub Pages**…). Il n'y a **plus de serveur Express** : le navigateur communique directement avec Firebase.
 
 ## Fonctionnalités
 
@@ -13,11 +13,12 @@ Cette version utilise **Firebase** comme backend (authentification, base de donn
 - Paiement : **M-Pesa, Orange Money, Airtel Money, Africell Money ou paiement à la livraison**
 
 ### Pour les membres (gratuit)
-- Inscription / connexion sécurisée (Firebase Auth)
+- Inscription / connexion sécurisée (Firebase Authentication)
 - **Espace vendeur ouvert à tous** : publier, modifier et supprimer des produits (avec photo)
-- Tableau de bord : produits actifs, commandes reçues, chiffre d'affaires
-- Gestion des commandes : confirmer, expédier, livrer, annuler (avec remise en stock)
-- Suivi de ses propres achats : historique et statuts (en attente → confirmée → expédiée → livrée)
+- Import en 1 clic des **12 produits de démonstration** RDC lorsque le catalogue est vide
+- Tableau de bord vendeur : produits actifs, commandes reçues, chiffre d'affaires
+- Gestion des commandes : confirmer, expédier, livrer, annuler (avec remise en stock transactionnelle)
+- Suivi de ses propres achats : historique et statuts (`en_attente` → `confirmee` → `expediee` → `livree`)
 
 ## Démarrage rapide
 
@@ -28,86 +29,46 @@ npm start
 
 Ouvrez ensuite **http://localhost:3000**.
 
-### 1. Configurer Firebase (obligatoire)
+## Configuration du projet Firebase (`bwaka-ac664`)
 
-Le frontend appelle Firebase directement. Vous devez créer un projet Firebase et renseigner ses clés :
+Les clés publiques du projet `bwaka-ac664` sont déjà renseignées dans `public/js/firebase-config.js`.
+Assurez-vous dans la [Console Firebase (`bwaka-ac664`)](https://console.firebase.google.com/project/bwaka-ac664) que :
 
-1. Créez un projet sur [https://console.firebase.google.com/](https://console.firebase.google.com/)
-2. Ajoutez une application Web et copiez sa configuration (`firebaseConfig`)
-3. Ouvrez `public/js/firebase-config.js` et remplacez les valeurs vides par vos clés :
+1. **Authentication** → *Sign-in method* → **Adresse e-mail / mot de passe** est **activé**.
+2. **Firestore Database** est **créée** et ses règles correspondent à `firestore.rules` (copiez-collez le contenu de `firestore.rules` dans l'onglet *Règles*, ou exécutez `firebase deploy --only firestore:rules`).
+3. *(Optionnel)* **Storage** : si Firebase Storage est activé, les images sont stockées dans `uploads/` (`storage.rules`). Sur le plan gratuit Spark sans Storage, les images sont automatiquement compressées côté navigateur (JPEG léger) afin que la publication d'annonces avec photo fonctionne sans carte bancaire.
 
-```js
-const firebaseConfig = {
-  apiKey: 'VOTRE_API_KEY',
-  authDomain: 'VOTRE_PROJET.firebaseapp.com',
-  projectId: 'VOTRE_PROJET_ID',
-  storageBucket: 'VOTRE_PROJET.appspot.com',
-  messagingSenderId: '...',
-  appId: '...',
-};
-```
-
-4. Dans la console Firebase, activez **Authentification** > Méthode de connexion "E-mail/mot de passe".
-5. Créez une base de données **Firestore** en mode test (ou déployez les règles fournies) :
-   ```bash
-   # Avec la Firebase CLI (optionnel) :
-   firebase deploy --only firestore,storage
-   ```
-   Les fichiers `firestore.rules` et `storage.rules` contiennent les règles de sécurité.
-
-### Test de rendu
+### Tests automatisés
 
 ```bash
-node test-rendu.js   # vérifie le rendu des pages statiques (headless, jsdom)
+npm test   # vérifie le chargement du SDK Firebase 11.4.0 et tout le parcours E2E (auth, produits, panier, commandes, ventes)
 ```
-
-**Nota** : ce test ne configure pas Firebase. Les pages qui appellent l'API (catalogue, produit, commande…) nécessitent un projet Firebase configuré pour fonctionner pleinement.
-
-### Comptes de démonstration
-
-Après avoir créé des comptes via l'interface d'inscription, ils sont stockés dans Firebase Auth + Firestore (collection `profils`). Il n'y a plus de comptes prédéfinis en dur.
 
 ## Architecture
 
 ```
-server.js            → Serveur statique minimal (Node http) + SPA fallback
-                     (sert public/ et renvoie index.html pour toute route inconnue)
-public/              → Application web (SPA en français, sans framework)
-  css/styles.css     → design system Bwaka
-  js/referentiels.js → listes statiques (catégories, villes, moyens de paiement)
-  js/firebase-config.js → initialisation Firebase (à configurer)
-  js/core.js         → état, API façade vers Firestore/Auth/Storage, panier, formatage
-  js/views.js        → pages (accueil, produit, panier, commande, vendeur…)
-  js/app.js          → routeur + initialisation Firebase Auth
-  images/            → visuels de démonstration
-firestore.rules      → règles de sécurité Firestore
-storage.rules        → règles de sécurité Firebase Storage
-firebase.json        → configuration Firebase Hosting (optionnel)
-lib/seed.js          → conservé comme référence des données de démo (non utilisé)
+server.js              → Serveur statique minimal (Node http) + SPA fallback
+netlify.toml           → Configuration Netlify (publish = "public" + redirection SPA)
+firebase.json          → Configuration Firebase Hosting, Firestore et Storage
+.firebaserc            → Projet Firebase par défaut (bwaka-ac664)
+firestore.rules        → Règles de sécurité Cloud Firestore
+firestore.indexes.json → Configuration d'index Firestore
+storage.rules          → Règles de sécurité Firebase Storage
+public/                → Application web (SPA en français, sans bundler)
+  css/styles.css       → Design system Bwaka
+  js/firebase-config.js→ Initialisation Firebase (projet bwaka-ac664)
+  js/referentiels.js   → Catégories, villes, paiements et catalogue de démo RDC
+  js/core.js           → État, façade API vers Auth/Firestore/Storage, panier, formatage FC
+  js/views.js          → Vues (accueil, produit, panier, commande, vendeur, ventes…)
+  js/app.js            → Routeur client (#/) + écouteur Firebase Auth
+  images/              → Visuels de démonstration
 ```
 
 ### Collections Firestore
 
 | Collection | Description |
 |------------|-------------|
-| `profils` | Profils des utilisateurs (id = UID Firebase Auth) |
-| `produits` | Catalogue produits (champ `vendeurId` pour le propriétaire) |
-| `commandes` | Commandes (champs `acheteurId`, `vendeurIds[]`, `items[]`) |
-| `compteurs` | Compteur global pour les numéros de commande |
-
-Les règles de sécurité (`firestore.rules`) garantissent qu'un utilisateur ne peut lire/modifier que ses propres produits et commandes.
-
-## Déploiement
-
-### Netlify (hébergement statique)
-Le fichier `netlify.toml` est déjà configuré : publiez le dossier `public/`, toutes les routes sont redirigées vers `index.html` (SPA). N'oubliez pas de configurer `public/js/firebase-config.js` avec vos clés Firebase.
-
-### Firebase Hosting
-```bash
-firebase deploy
-```
-(fichier `firebase.json` déjà présent)
-
-## Paiements
-
-Les montants sont en **francs congolais (FC)**. Les moyens de paiement sont déclaratifs : M-Pesa, Orange Money, Airtel Money, Africell Money ou paiement à la livraison. L'intégration effective avec les opérateurs mobile money est à prévoir selon le prestataire de paiement choisi.
+| `profils` | Profils des membres (`id` = UID Firebase Auth) |
+| `produits` | Catalogue produits (`vendeurId`, `statut`, `quantite`, `prix` en FC…) |
+| `commandes` | Commandes (`acheteurId`, `vendeurIds[]`, `items[]`, transactions de stock) |
+| `compteurs` | Compteur transactionnel (`global`) pour les numéros `BWK-AAAA-NNNN` |

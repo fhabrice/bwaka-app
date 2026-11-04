@@ -2,9 +2,10 @@
   "name": "bwaka-app",
   "version": "2.0.0",
   "description": "Plateforme de vente en ligne en RDC — marketplace ouverte à tous les membres (backend Firebase)",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test-rendu.js"
   },
   "repository": {
     "type": "git",
@@ -18,6 +19,7 @@
   },
   "homepage": "https://github.com/fhabrice/bwaka-app#readme",
   "devDependencies": {
+    "firebase": "^11.4.0",
     "jsdom": "^30.1.3"
   }
 }

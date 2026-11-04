@@ -67,7 +67,19 @@ Vues.accueil = {
         </form>
 
         ${produits.length === 0
-          ? `<div class="page-vide"><div class="grand">🔍</div><h3>Aucun produit trouvé</h3><p>Essayez une autre recherche ou publiez le premier produit dans cette catégorie.</p><a class="btn btn-primaire" href="#/vendre">Vendre un produit</a></div>`
+          ? `<div class="page-vide">
+              <div class="grand">🔍</div>
+              <h3>Aucun produit trouvé</h3>
+              <p>${q || categorie || ville
+                ? 'Essayez une autre recherche ou publiez le premier produit dans cette catégorie.'
+                : 'Le catalogue est encore vide. Publiez la première annonce ou importez les produits de démonstration.'}</p>
+              <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+                <a class="btn btn-primaire" href="#/vendre">Vendre un produit</a>
+                ${Etat.utilisateur && !q && !categorie && !ville
+                  ? `<button class="btn btn-jaune" type="button" data-importer-demo="1">✨ Importer les 12 produits démo</button>`
+                  : ''}
+              </div>
+            </div>`
           : `<div class="grille-produits">${produits.map(carteProduitHtml).join('')}</div>`}
       </section>
 
@@ -388,8 +400,8 @@ Vues.connexion = {
             <button class="btn btn-primaire btn-bloc" type="submit">Se connecter</button>
           </form>
           <div class="compte-demo">
-            <strong>Comptes de démonstration (mot de passe : demo123)</strong>
-            jean@bwaka.cd · grace@bwaka.cd · esperance@bwaka.cd
+            <strong>Nouveau sur Bwaka.cd ?</strong>
+            <a href="#/inscription" style="color:var(--bleu);font-weight:600">Créez gratuitement votre compte membre</a> pour acheter et vendre partout en RDC.
           </div>
         </div>
       </div>`;
@@ -576,7 +588,7 @@ Vues.mesProduits = {
       location.hash = '#/connexion?suivant=' + encodeURIComponent('#/mes-produits');
       return '';
     }
-    const { produits } = await api(`/api/produits?vendeur=${Etat.utilisateur.id}`);
+    const { produits } = await api(`/api/produits?vendeur=${encodeURIComponent(Etat.utilisateur.id)}&inclureInactifs=1`);
     return `
       <section class="section">
         <div class="entete-section">
@@ -584,7 +596,15 @@ Vues.mesProduits = {
           <a class="btn btn-jaune" href="#/vendre">+ Nouveau produit</a>
         </div>
         ${produits.length === 0
-          ? `<div class="page-vide"><div class="grand">📦</div><h3>Vous n'avez pas encore de produit</h3><p>Publiez votre première annonce pour commencer à vendre.</p><a class="btn btn-primaire" href="#/vendre">Vendre un produit</a></div>`
+          ? `<div class="page-vide">
+              <div class="grand">📦</div>
+              <h3>Vous n'avez pas encore de produit</h3>
+              <p>Publiez votre première annonce ou importez les 12 produits de démonstration pour tester la boutique.</p>
+              <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+                <a class="btn btn-primaire" href="#/vendre">Vendre un produit</a>
+                <button class="btn btn-jaune" type="button" data-importer-demo="1">✨ Importer les produits démo</button>
+              </div>
+            </div>`
           : `<table class="tableau-simple">
               <thead><tr><th>Produit</th><th>Prix</th><th>Stock</th><th>Ville</th><th>Actions</th></tr></thead>
               <tbody>
@@ -594,7 +614,7 @@ Vues.mesProduits = {
                   <tr>
                     <td><a href="#/produit/${e(p.id)}" style="font-weight:650">${e(p.nom)}</a><div class="aide">${e(p.categorie)}</div></td>
                     <td><strong>${fc(p.prix)}</strong></td>
-                    <td>${p.quantite}</td>
+                    <td>${p.quantite > 0 ? p.quantite : '<span style="color:var(--rouge);font-weight:600">0 (rupture)</span>'}</td>
                     <td>${e(p.ville)}</td>
                     <td><div class="actions">
                       <a class="btn btn-ghost btn-petit" href="#/produit/${e(p.id)}">Voir</a>
@@ -675,7 +695,7 @@ Vues.mesVentes = {
       location.hash = '#/connexion?suivant=' + encodeURIComponent('#/ventes');
       return '';
     }
-    const [stats, ventes] = await Promise.all([api('/api/stats'), api('/api/ventes')]);
+    const [stats, { ventes }] = await Promise.all([api('/api/stats'), api('/api/ventes')]);
     return `
       <section class="section">
         <div class="entete-section">
@@ -704,7 +724,7 @@ Vues.mesVentes = {
 
         <div class="entete-section"><div><h2 style="font-size:1.25rem">Commandes reçues</h2></div>
           <a class="lien-voir" href="#/mes-produits">Gérer mes produits</a></div>
-        ${stats.ventes === 0
+        ${ventes.length === 0
           ? `<div class="page-vide"><div class="grand">🛍️</div><h3>Pas encore de vente</h3><p>Partagez vos annonces pour attirer des acheteurs.</p><a class="btn btn-primaire" href="#/vendre">Publier un produit</a></div>`
           : ventes.map((c) => commandeCarteHtml(c, true)).join('')}
       </section>`;

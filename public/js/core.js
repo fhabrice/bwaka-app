@@ -8,8 +8,10 @@ const Etat = {
   referentiels: { categories: [], methodesPaiement: [], villes: [] },
 };
 
+const cacheProfils = new Map();
+
 function sauverSession() {
-  if (Etat.token) {
+  if (Etat.token && Etat.utilisateur) {
     localStorage.setItem('bwaka_token', Etat.token);
     localStorage.setItem('bwaka_utilisateur', JSON.stringify(Etat.utilisateur));
   } else {
@@ -33,144 +35,346 @@ function chargerReferentiels() {
   return Etat.referentiels;
 }
 
-/* ============ Helpers Firestore ============ */
-function colProduits() { return collection(window.db, 'produits'); }
-function colCommandes() { return collection(window.db, 'commandes'); }
-function colProfils() { return collection(window.db, 'profils'); }
-
-function erreurFirebase(err, statutParDefaut = 500) {
-  const e = new Error(err.message || 'Erreur inconnue');
-  e.status = err.status || statutParDefaut;
-  return e;
+/* ============ Helpers Firebase / Firestore ============ */
+function docExiste(snap) {
+  if (!snap) return false;
+  return typeof snap.exists === 'function' ? snap.exists() : Boolean(snap.exists);
 }
 
-/* ============ API (façade compatible avec l'ancienne interface /api/*) ============ */
-async function api(chemin, options = {}) {
-  const entetes = { ...(options.entetes || {}) };
-  if (options.corps && !(options.corps instanceof FormData)) {
-    entetes['Content-Type'] = 'application/json';
-    options = { ...options, corps: JSON.stringify(options.corps) };
-  }
-  if (Etat.token) entetes['Authorization'] = `Bearer ${Etat.token}`;
+function creerErreurClient(message, status = 400) {
+  const err = new Error(message);
+  err.status = status;
+  err._dejaFormate = true;
+  return err;
+}
 
-  let url = chemin;
-  let query = {};
-  if (typeof url === 'string' && url.includes('?')) {
-    const parties = url.split('?');
-    url = parties[0];
-    query = new URLSearchParams(parties[1]);
+function verifierFirebase() {
+  if (!window.db || !window.auth) {
+    throw creerErreurClient(
+      'Connexion à Firebase indisponible. Vérifiez votre connexion Internet ou la configuration Firebase (public/js/firebase-config.js).',
+      503
+    );
+  }
+}
+
+function erreurFirebase(err, statutParDefaut = 500) {
+  if (err && err._dejaFormate) return err;
+
+  const code = String((err && err.code) || '').toLowerCase();
+  const brut = String((err && err.message) || '');
+
+  const correspondances = {
+    'auth/email-already-in-use': ['Un compte existe déjà avec cet e-mail.', 409],
+    'auth/invalid-email': ['Adresse e-mail invalide.', 400],
+    'auth/weak-password': ['Le mot de passe doit contenir au moins 6 caractères.', 400],
+    'auth/user-not-found': ['E-mail ou mot de passe incorrect.', 401],
+    'auth/wrong-password': ['E-mail ou mot de passe incorrect.', 401],
+    'auth/invalid-credential': ['E-mail ou mot de passe incorrect.', 401],
+    'auth/invalid-login-credentials': ['E-mail ou mot de passe incorrect.', 401],
+    'auth/user-disabled': ['Ce compte utilisateur a été désactivé.', 403],
+    'auth/too-many-requests': ['Trop de tentatives. Veuillez patienter quelques instants avant de réessayer.', 429],
+    'auth/operation-not-allowed': [
+      'La connexion E-mail/Mot de passe n’est pas activée dans la console Firebase (Authentication > Sign-in method).',
+      500,
+    ],
+    'auth/configuration-not-found': [
+      'L’authentification Firebase n’est pas encore activée pour ce projet (Console Firebase > Authentication > Commencer).',
+      500,
+    ],
+    'auth/network-request-failed': ['Impossible de joindre Firebase. Vérifiez votre connexion Internet.', 503],
+    'permission-denied': [
+      'Accès refusé par les règles Firestore. Déployez firestore.rules ou activez les règles dans la Console Firebase.',
+      403,
+    ],
+    'unavailable': ['Service Firestore temporairement indisponible. Vérifiez votre connexion Internet.', 503],
+    'failed-precondition': ['Requête refusée par Firestore (précondition ou configuration de la base).', 400],
+  };
+
+  for (const [cle, [msg, st]] of Object.entries(correspondances)) {
+    if (code === cle || code.endsWith('/' + cle)) {
+      return creerErreurClient(msg, st);
+    }
+  }
+
+  if (code.includes('not-found') && brut.toLowerCase().includes('database')) {
+    return creerErreurClient(
+      'La base Cloud Firestore n’est pas encore créée dans la Console Firebase du projet bwaka-ac664.',
+      500
+    );
+  }
+
+  const out = new Error(brut || 'Une erreur inattendue est survenue.');
+  out.status = (err && err.status) || statutParDefaut;
+  return out;
+}
+
+function lireFichierDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const lecteur = new FileReader();
+    lecteur.onload = () => resolve(String(lecteur.result || ''));
+    lecteur.onerror = () => reject(creerErreurClient('Impossible de lire le fichier image.', 400));
+    lecteur.readAsDataURL(file);
+  });
+}
+
+async function compresserImageDataUrl(file, maxDim = 800, qualite = 0.78) {
+  const dataUrl = await lireFichierDataUrl(file);
+  if (typeof Image === 'undefined' || typeof document === 'undefined') return dataUrl;
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let { width, height } = img;
+        if (!width || !height) return resolve(dataUrl);
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.max(1, Math.round(width * ratio));
+          height = Math.max(1, Math.round(height * ratio));
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext && canvas.getContext('2d');
+        if (!ctx) return resolve(dataUrl);
+        ctx.drawImage(img, 0, 0, width, height);
+        const resultat = canvas.toDataURL('image/jpeg', qualite);
+        resolve(resultat && resultat.startsWith('data:image/') ? resultat : dataUrl);
+      } catch {
+        resolve(dataUrl);
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+async function assurerProfilUtilisateur(user, defauts = {}) {
+  const refProfil = window.db.collection('profils').doc(user.uid);
+  const snap = await refProfil.get();
+  if (docExiste(snap)) {
+    const data = { id: user.uid, ...snap.data() };
+    cacheProfils.set(user.uid, data);
+    return data;
+  }
+  const emailNorm = String(defauts.email || user.email || '').trim().toLowerCase();
+  const nomParDefaut = defauts.nom || user.displayName || (emailNorm ? emailNorm.split('@')[0] : 'Membre Bwaka');
+  const profil = {
+    id: user.uid,
+    nom: String(nomParDefaut).trim(),
+    email: emailNorm,
+    telephone: String(defauts.telephone || '').trim(),
+    ville: String(defauts.ville || 'Goma').trim(),
+    createdAt: new Date().toISOString(),
+  };
+  await refProfil.set(profil);
+  cacheProfils.set(user.uid, profil);
+  return profil;
+}
+
+/* ============ API (façade compatible avec l'interface /api/*) ============ */
+async function api(chemin, options = {}) {
+  const methode = (options.method || 'GET').toUpperCase();
+  let corpsBrut = options.corps;
+  if (corpsBrut && !(corpsBrut instanceof FormData) && typeof corpsBrut !== 'string') {
+    corpsBrut = JSON.stringify(corpsBrut);
+  }
+
+  let url = String(chemin || '');
+  let searchParams = new URLSearchParams();
+  const idxQ = url.indexOf('?');
+  if (idxQ >= 0) {
+    searchParams = new URLSearchParams(url.slice(idxQ + 1));
+    url = url.slice(0, idxQ);
   }
 
   try {
-    // ---------- Referentiels ----------
-    if (url === '/api/referentiels') {
+    // ---------- Référentiels (statique, aucune requête réseau) ----------
+    if (url === '/api/referentiels' && methode === 'GET') {
       return { ...chargerReferentiels() };
     }
 
-    // ---------- Auth ----------
-    if (url === '/api/auth/inscription' && (options.method || 'GET') === 'POST') {
-      const body = options.corps ? JSON.parse(options.corps) : {};
+    verifierFirebase();
+    const colProduits = window.db.collection('produits');
+    const colCommandes = window.db.collection('commandes');
+    const colProfils = window.db.collection('profils');
+
+    // ---------- Authentification ----------
+    if (url === '/api/auth/inscription' && methode === 'POST') {
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
       const { nom, email, telephone, ville, motDePasse } = body;
       if (!nom || !email || !telephone || !ville || !motDePasse) {
-        throw Object.assign(new Error('Tous les champs sont obligatoires'), { status: 400 });
+        throw creerErreurClient('Tous les champs sont obligatoires', 400);
       }
-      const cred = await createUserWithEmailAndPassword(window.auth, email, motDePasse);
+      const emailNorm = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) {
+        throw creerErreurClient('Adresse e-mail invalide', 400);
+      }
+      if (String(motDePasse).length < 6) {
+        throw creerErreurClient('Le mot de passe doit contenir au moins 6 caractères', 400);
+      }
+
+      const cred = await window.auth.createUserWithEmailAndPassword(emailNorm, String(motDePasse));
       const user = cred.user;
+      try {
+        if (typeof user.updateProfile === 'function') {
+          await user.updateProfile({ displayName: String(nom).trim() });
+        }
+      } catch {}
+
       const profil = {
         id: user.uid,
         nom: String(nom).trim(),
-        email: String(email).trim().toLowerCase(),
+        email: emailNorm,
         telephone: String(telephone).trim(),
         ville: String(ville).trim(),
         createdAt: new Date().toISOString(),
       };
-      await setDoc(doc(window.db, 'profils', user.uid), profil);
-      const token = await user.getIdToken();
+      await colProfils.doc(user.uid).set(profil);
+      cacheProfils.set(user.uid, profil);
+
+      const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : user.uid;
       Etat.token = token;
       Etat.utilisateur = profil;
       sauverSession();
       return { token, utilisateur: profil };
     }
 
-    if (url === '/api/auth/connexion' && (options.method || 'GET') === 'POST') {
-      const body = options.corps ? JSON.parse(options.corps) : {};
+    if (url === '/api/auth/connexion' && methode === 'POST') {
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
       const { email, motDePasse } = body;
-      const cred = await signInWithEmailAndPassword(window.auth, email, motDePasse);
+      if (!email || !motDePasse) {
+        throw creerErreurClient('Veuillez saisir votre e-mail et votre mot de passe', 400);
+      }
+      const emailNorm = String(email).trim().toLowerCase();
+      const cred = await window.auth.signInWithEmailAndPassword(emailNorm, String(motDePasse));
       const user = cred.user;
-      const snap = await getDoc(doc(window.db, 'profils', user.uid));
-      if (!snap.exists()) throw Object.assign(new Error('Profil introuvable'), { status: 404 });
-      const profil = snap.data();
-      const token = await user.getIdToken();
+      const profil = await assurerProfilUtilisateur(user, { email: emailNorm });
+      const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : user.uid;
       Etat.token = token;
       Etat.utilisateur = profil;
       sauverSession();
       return { token, utilisateur: profil };
     }
 
-    if (url === '/api/auth/moi') {
+    if (url === '/api/auth/moi' && methode === 'GET') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Non connecté'), { status: 401 });
-      const snap = await getDoc(doc(window.db, 'profils', user.uid));
-      if (!snap.exists()) throw Object.assign(new Error('Profil introuvable'), { status: 404 });
-      return { utilisateur: snap.data() };
+      if (!user) throw creerErreurClient('Non connecté', 401);
+      const profil = await assurerProfilUtilisateur(user);
+      const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : user.uid;
+      Etat.token = token;
+      Etat.utilisateur = profil;
+      sauverSession();
+      return { utilisateur: profil };
     }
 
     // ---------- Produits ----------
-    if (url === '/api/produits' && (options.method || 'GET') === 'GET') {
-      const q = query.get('q');
-      const categorie = query.get('categorie');
-      const ville = query.get('ville');
-      const vendeur = query.get('vendeur');
-      const tri = query.get('tri');
+    if (url === '/api/produits' && methode === 'GET') {
+      const q = searchParams.get('q') || '';
+      const categorie = searchParams.get('categorie') || '';
+      const ville = searchParams.get('ville') || '';
+      const vendeur = searchParams.get('vendeur') || '';
+      const tri = searchParams.get('tri') || '';
+      const inclureInactifs = searchParams.get('inclureInactifs') === '1';
 
-      let qRef = query(colProduits(), where('statut', '==', 'actif'));
-      if (categorie) qRef = query(qRef, where('categorie', '==', categorie));
-      if (ville) qRef = query(qRef, where('ville', '==', ville));
-      if (vendeur) qRef = query(qRef, where('vendeurId', '==', vendeur));
-      if (tri === 'prix_asc') qRef = query(qRef, orderBy('prix', 'asc'));
-      else if (tri === 'prix_desc') qRef = query(qRef, orderBy('prix', 'desc'));
-      else qRef = query(qRef, orderBy('createdAt', 'desc'));
+      // Requête à champ unique pour éviter toute erreur d'index composite Firestore
+      const reqFirestore = vendeur
+        ? colProduits.where('vendeurId', '==', vendeur)
+        : colProduits.where('statut', '==', 'actif');
 
-      const snap = await getDocs(qRef);
-      let liste = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const snap = await reqFirestore.get();
+      let liste = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+
+      if (!inclureInactifs) {
+        liste = liste.filter((p) => p.statut === 'actif');
+      }
+      if (categorie) liste = liste.filter((p) => p.categorie === categorie);
+      if (ville) liste = liste.filter((p) => p.ville === ville);
+      if (vendeur) liste = liste.filter((p) => p.vendeurId === vendeur);
 
       if (q) {
         const terme = String(q).toLowerCase();
-        liste = liste.filter(p =>
-          String(p.nom || '').toLowerCase().includes(terme) ||
-          String(p.description || '').toLowerCase().includes(terme) ||
-          String(p.categorie || '').toLowerCase().includes(terme)
+        liste = liste.filter(
+          (p) =>
+            String(p.nom || '').toLowerCase().includes(terme) ||
+            String(p.description || '').toLowerCase().includes(terme) ||
+            String(p.categorie || '').toLowerCase().includes(terme)
         );
       }
 
-      const listeComplète = [];
-      for (const p of liste) {
-        listeComplète.push(await produitComplet(p));
-      }
-      return { produits: listeComplète };
+      liste.sort((a, b) => {
+        if (tri === 'prix_asc') return (a.prix || 0) - (b.prix || 0);
+        if (tri === 'prix_desc') return (b.prix || 0) - (a.prix || 0);
+        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+      });
+
+      return { produits: await enrichirProduits(liste) };
     }
 
-    if (url.match(/^\/api\/produits\/([^/]+)$/) && (options.method || 'GET') === 'GET') {
-      const id = url.match(/^\/api\/produits\/([^/]+)$/)[1];
-      const snap = await getDoc(doc(window.db, 'produits', id));
-      if (!snap.exists()) throw Object.assign(new Error('Produit introuvable'), { status: 404 });
-      return { produit: await produitComplet({ id: snap.id, ...snap.data() }) };
-    }
-
-    if (url === '/api/produits' && (options.method || 'GET') === 'POST') {
-      const body = options.corps ? JSON.parse(options.corps) : {};
+    if (url === '/api/produits/demo' && methode === 'POST') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
+      if (!user) throw creerErreurClient('Connexion requise pour importer les produits', 401);
+      await assurerProfilUtilisateur(user);
 
+      const existantsSnap = await colProduits.where('vendeurId', '==', user.uid).get();
+      const nomsExistants = new Set(
+        existantsSnap.docs.map((d) => String(d.data().nom || '').trim().toLowerCase())
+      );
+
+      const aCreer = (Referentiels.produitsDemo || []).filter(
+        (d) => !nomsExistants.has(String(d.nom).trim().toLowerCase())
+      );
+
+      if (aCreer.length > 0) {
+        const batch = window.db.batch();
+        const maintenant = Date.now();
+        aCreer.forEach((item, idx) => {
+          const docRef = colProduits.doc();
+          batch.set(docRef, {
+            id: docRef.id,
+            nom: item.nom,
+            description: item.description,
+            prix: Math.round(Number(item.prix)),
+            categorie: item.categorie,
+            quantite: Math.max(1, Number(item.quantite) || 1),
+            image: item.image || null,
+            vendeurId: user.uid,
+            ville: item.ville,
+            statut: 'actif',
+            createdAt: new Date(maintenant - idx * 60000).toISOString(),
+          });
+        });
+        await batch.commit();
+      }
+
+      return { importes: aCreer.length };
+    }
+
+    const matchProduit = url.match(/^\/api\/produits\/([^/]+)$/);
+    if (matchProduit && methode === 'GET') {
+      const id = decodeURIComponent(matchProduit[1]);
+      const snap = await colProduits.doc(id).get();
+      if (!docExiste(snap)) throw creerErreurClient('Produit introuvable', 404);
+      return { produit: await produitComplet({ ...snap.data(), id: snap.id }) };
+    }
+
+    if (url === '/api/produits' && methode === 'POST') {
+      const user = window.auth.currentUser;
+      if (!user) throw creerErreurClient('Connexion requise', 401);
+
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
       const { nom, description, prix, categorie, quantite, ville, image } = body;
       if (!nom || !description || !prix || !categorie || !ville) {
-        throw Object.assign(new Error('Nom, description, prix, catégorie et ville sont obligatoires'), { status: 400 });
+        throw creerErreurClient('Nom, description, prix, catégorie et ville sont obligatoires', 400);
       }
       const prixNum = Number(prix);
       if (!Number.isFinite(prixNum) || prixNum <= 0) {
-        throw Object.assign(new Error('Le prix doit être un nombre positif'), { status: 400 });
+        throw creerErreurClient('Le prix doit être un nombre positif', 400);
       }
+
+      const docRef = colProduits.doc();
       const produit = {
+        id: docRef.id,
         nom: String(nom).trim(),
         description: String(description).trim(),
         prix: Math.round(prixNum),
@@ -182,181 +386,241 @@ async function api(chemin, options = {}) {
         statut: 'actif',
         createdAt: new Date().toISOString(),
       };
-      const ref = await addDoc(colProduits(), produit);
-      const produitAvecId = { id: ref.id, ...produit };
-      return { produit: await produitComplet(produitAvecId) };
+      await docRef.set(produit);
+      return { produit: await produitComplet(produit) };
     }
 
-    if (url.match(/^\/api\/produits\/([^/]+)$/) && (options.method || 'GET') === 'PUT') {
-      const id = url.match(/^\/api\/produits\/([^/]+)$/)[1];
+    if (matchProduit && methode === 'PUT') {
+      const id = decodeURIComponent(matchProduit[1]);
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
+      if (!user) throw creerErreurClient('Connexion requise', 401);
 
-      const snap = await getDoc(doc(window.db, 'produits', id));
-      if (!snap.exists()) throw Object.assign(new Error('Produit introuvable'), { status: 404 });
+      const docRef = colProduits.doc(id);
+      const snap = await docRef.get();
+      if (!docExiste(snap)) throw creerErreurClient('Produit introuvable', 404);
       const p = snap.data();
-      if (p.vendeurId !== user.uid) throw Object.assign(new Error('Vous ne pouvez modifier que vos propres produits'), { status: 403 });
+      if (p.vendeurId !== user.uid) {
+        throw creerErreurClient('Vous ne pouvez modifier que vos propres produits', 403);
+      }
 
-      const body = options.corps ? JSON.parse(options.corps) : {};
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
       const misesAJour = {};
-      const champs = ['nom', 'description', 'categorie', 'ville', 'image'];
-      for (const c of champs) {
-        if (body[c] !== undefined) misesAJour[c] = String(body[c]);
+      for (const c of ['nom', 'description', 'categorie', 'ville', 'image']) {
+        if (body[c] !== undefined) misesAJour[c] = body[c] === null ? null : String(body[c]);
       }
       if (body.prix !== undefined) {
         const prixNum = Number(body.prix);
-        if (!Number.isFinite(prixNum) || prixNum <= 0) throw Object.assign(new Error('Le prix doit être un nombre positif'), { status: 400 });
+        if (!Number.isFinite(prixNum) || prixNum <= 0) {
+          throw creerErreurClient('Le prix doit être un nombre positif', 400);
+        }
         misesAJour.prix = Math.round(prixNum);
       }
-      if (body.quantite !== undefined) misesAJour.quantite = Math.max(0, Number(body.quantite) || 0);
-      if (body.statut === 'actif' || body.statut === 'inactif') misesAJour.statut = body.statut;
+      if (body.quantite !== undefined) {
+        misesAJour.quantite = Math.max(0, Number(body.quantite) || 0);
+      }
+      if (body.statut === 'actif' || body.statut === 'inactif') {
+        misesAJour.statut = body.statut;
+      }
 
-      await updateDoc(doc(window.db, 'produits', id), misesAJour);
-      const snap2 = await getDoc(doc(window.db, 'produits', id));
-      return { produit: await produitComplet({ id: snap2.id, ...snap2.data() }) };
+      await docRef.update(misesAJour);
+      const snap2 = await docRef.get();
+      return { produit: await produitComplet({ ...snap2.data(), id: snap2.id }) };
     }
 
-    if (url.match(/^\/api\/produits\/([^/]+)$/) && (options.method || 'GET') === 'DELETE') {
-      const id = url.match(/^\/api\/produits\/([^/]+)$/)[1];
+    if (matchProduit && methode === 'DELETE') {
+      const id = decodeURIComponent(matchProduit[1]);
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
+      if (!user) throw creerErreurClient('Connexion requise', 401);
 
-      const snap = await getDoc(doc(window.db, 'produits', id));
-      if (!snap.exists()) throw Object.assign(new Error('Produit introuvable'), { status: 404 });
-      if (snap.data().vendeurId !== user.uid) throw Object.assign(new Error('Vous ne pouvez supprimer que vos propres produits'), { status: 403 });
+      const docRef = colProduits.doc(id);
+      const snap = await docRef.get();
+      if (!docExiste(snap)) throw creerErreurClient('Produit introuvable', 404);
+      if (snap.data().vendeurId !== user.uid) {
+        throw creerErreurClient('Vous ne pouvez supprimer que vos propres produits', 403);
+      }
 
-      await deleteDoc(doc(window.db, 'produits', id));
+      await docRef.delete();
       return { ok: true };
     }
 
-    // ---------- Upload ----------
-    if (url === '/api/upload' && (options.method || 'GET') === 'POST') {
+    // ---------- Upload d'image ----------
+    if (url === '/api/upload' && methode === 'POST') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
-      const file = options.corps instanceof FormData ? options.corps.get('image') : null;
-      if (!file) throw Object.assign(new Error('Aucune image reçue'), { status: 400 });
-      if (!file.type || !/^image\//.test(file.type)) throw Object.assign(new Error('Seules les images sont acceptées'), { status: 400 });
+      if (!user) throw creerErreurClient('Connexion requise', 401);
 
-      const nomFichier = file.name || 'image.jpg';
-      const point = nomFichier.lastIndexOf('.');
-      const ext = point >= 0 ? nomFichier.slice(point).toLowerCase() : '.jpg';
-      const refStorage = ref(window.storage, `uploads/${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}${ext}`);
-      await uploadBytes(refStorage, file);
-      const urlDownload = await getDownloadURL(refStorage);
-      return { url: urlDownload };
+      const file = options.corps instanceof FormData ? options.corps.get('image') : null;
+      if (!file) throw creerErreurClient('Aucune image reçue', 400);
+      if (file.type && !/^image\//.test(file.type)) {
+        throw creerErreurClient('Seules les images sont acceptées', 400);
+      }
+      if (file.size && file.size > 5 * 1024 * 1024) {
+        throw creerErreurClient('L’image ne doit pas dépasser 5 Mo', 400);
+      }
+
+      if (window.storage && typeof window.storage.ref === 'function') {
+        try {
+          const nomFichier = file.name || 'image.jpg';
+          const point = nomFichier.lastIndexOf('.');
+          const ext = point >= 0 ? nomFichier.slice(point).toLowerCase() : '.jpg';
+          const cheminStorage = `uploads/${user.uid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+          const storageRef = window.storage.ref(cheminStorage);
+
+          const urlDownload = await Promise.race([
+            storageRef.put(file).then(() => storageRef.getDownloadURL()),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Storage timeout')), 6000)),
+          ]);
+          return { url: urlDownload };
+        } catch {
+          // Repli automatique (plan gratuit Spark sans Firebase Storage activé) :
+          // compression côté navigateur en JPEG léger stocké dans le document produit.
+        }
+      }
+
+      const dataUrl = await compresserImageDataUrl(file);
+      return { url: dataUrl };
     }
 
     // ---------- Commandes ----------
-    if (url === '/api/commandes' && (options.method || 'GET') === 'POST') {
+    if (url === '/api/commandes' && methode === 'POST') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
-      const body = options.corps ? JSON.parse(options.corps) : {};
+      if (!user) throw creerErreurClient('Connexion requise', 401);
+
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
       const { items, adresse, methodePaiement } = body;
 
-      if (!Array.isArray(items) || items.length === 0) throw Object.assign(new Error('Votre panier est vide'), { status: 400 });
-      if (!adresse || !adresse.nom || !adresse.telephone || !adresse.ville || !adresse.quartier) throw Object.assign(new Error('Veuillez compléter l’adresse de livraison'), { status: 400 });
-      if (!Referentiels.methodesPaiement.includes(methodePaiement)) throw Object.assign(new Error('Méthode de paiement invalide'), { status: 400 });
+      if (!Array.isArray(items) || items.length === 0) {
+        throw creerErreurClient('Votre panier est vide', 400);
+      }
+      if (!adresse || !adresse.nom || !adresse.telephone || !adresse.ville || !adresse.quartier) {
+        throw creerErreurClient('Veuillez compléter l’adresse de livraison', 400);
+      }
+      if (!Referentiels.methodesPaiement.includes(methodePaiement)) {
+        throw creerErreurClient('Méthode de paiement invalide', 400);
+      }
 
-      const lignes = [];
-      const vendeurIds = new Set();
+      // Regrouper les quantités demandées par produitId
+      const demandes = new Map();
       for (const item of items) {
-        const snap = await getDoc(doc(window.db, 'produits', item.produitId));
-        if (!snap.exists()) throw Object.assign(new Error(`Produit indisponible : ${item.produitId}`), { status: 400 });
-        const p = snap.data();
-        if (p.statut !== 'actif') throw Object.assign(new Error(`Produit indisponible : ${item.produitId}`), { status: 400 });
-        const quantite = Math.max(1, Number(item.quantite) || 1);
-        if (p.quantite < quantite) throw Object.assign(new Error(`Stock insuffisant pour « ${p.nom} »`), { status: 400 });
-        lignes.push({
-          produitId: p.id,
-          nom: p.nom,
-          prix: p.prix,
-          image: p.image,
-          quantite,
-          vendeurId: p.vendeurId,
-        });
-        vendeurIds.add(p.vendeurId);
+        const pid = String(item.produitId || '').trim();
+        if (!pid) throw creerErreurClient('Produit invalide dans le panier', 400);
+        const qte = Math.max(1, Number(item.quantite) || 1);
+        demandes.set(pid, (demandes.get(pid) || 0) + qte);
       }
 
-      // Décrémenter le stock (transaction)
-      for (const ligne of lignes) {
-        const produitRef = doc(window.db, 'produits', ligne.produitId);
-        await runTransaction(window.db, async (tx) => {
-          const snap = await tx.get(produitRef);
+      const cmdRef = colCommandes.doc();
+      const compteurRef = window.db.collection('compteurs').doc('global');
+
+      const commande = await window.db.runTransaction(async (tx) => {
+        // 1. Toutes les lectures en premier (exigence des transactions Firestore)
+        const pids = [...demandes.keys()];
+        const prodRefs = pids.map((pid) => colProduits.doc(pid));
+        const prodSnaps = [];
+        for (const ref of prodRefs) {
+          prodSnaps.push(await tx.get(ref));
+        }
+        const compteurSnap = await tx.get(compteurRef);
+
+        const lignes = [];
+        const vendeurIds = new Set();
+
+        prodSnaps.forEach((snap, idx) => {
+          const pid = pids[idx];
+          if (!docExiste(snap)) {
+            throw creerErreurClient(`Produit indisponible : ${pid}`, 400);
+          }
           const p = snap.data();
-          const nouvelleQte = Math.max(0, (p.quantite || 0) - ligne.quantite);
-          const misesAJour = { quantite: nouvelleQte };
-          if (nouvelleQte <= 0) misesAJour.statut = 'inactif';
-          tx.update(produitRef, misesAJour);
+          if (p.statut !== 'actif') {
+            throw creerErreurClient(`Produit indisponible : « ${p.nom || pid} »`, 400);
+          }
+          const qteDemandee = demandes.get(pid);
+          if ((p.quantite || 0) < qteDemandee) {
+            throw creerErreurClient(`Stock insuffisant pour « ${p.nom} »`, 400);
+          }
+          lignes.push({
+            produitId: snap.id,
+            nom: p.nom,
+            prix: p.prix,
+            image: p.image || null,
+            quantite: qteDemandee,
+            vendeurId: p.vendeurId,
+          });
+          vendeurIds.add(p.vendeurId);
         });
-      }
 
-      const compteurSnap = await getDoc(doc(window.db, 'compteurs', 'global'));
-      let numeroCommande = 1;
-      if (compteurSnap.exists()) {
-        numeroCommande = (compteurSnap.data().commande || 0) + 1;
-        await updateDoc(doc(window.db, 'compteurs', 'global'), { commande: numeroCommande });
-      } else {
-        await setDoc(doc(window.db, 'compteurs', 'global'), { commande: 1 });
-      }
+        const numeroCommande = (docExiste(compteurSnap) ? (compteurSnap.data().commande || 1000) : 1000) + 1;
 
-      const commande = {
-        id: null,
-        numero: `BWK-${new Date().getFullYear()}-${String(numeroCommande).padStart(4, '0')}`,
-        acheteurId: user.uid,
-        items: lignes,
-        total: lignes.reduce((s, l) => s + l.prix * l.quantite, 0),
-        adresse: {
-          nom: String(adresse.nom).trim(),
-          telephone: String(adresse.telephone).trim(),
-          ville: String(adresse.ville).trim(),
-          quartier: String(adresse.quartier).trim(),
-          indication: String(adresse.indication || '').trim(),
-        },
-        methodePaiement,
-        statut: 'en_attente',
-        createdAt: new Date().toISOString(),
-        vendeurIds: [...vendeurIds],
-      };
+        const docCommande = {
+          id: cmdRef.id,
+          numero: `BWK-${new Date().getFullYear()}-${String(numeroCommande).padStart(4, '0')}`,
+          acheteurId: user.uid,
+          items: lignes,
+          total: lignes.reduce((s, l) => s + l.prix * l.quantite, 0),
+          adresse: {
+            nom: String(adresse.nom).trim(),
+            telephone: String(adresse.telephone).trim(),
+            ville: String(adresse.ville).trim(),
+            quartier: String(adresse.quartier).trim(),
+            indication: String(adresse.indication || '').trim(),
+          },
+          methodePaiement,
+          statut: 'en_attente',
+          createdAt: new Date().toISOString(),
+          vendeurIds: [...vendeurIds],
+        };
 
-      const ref = await addDoc(colCommandes(), commande);
-      commande.id = ref.id;
+        // 2. Toutes les écritures ensuite
+        prodSnaps.forEach((snap, idx) => {
+          const p = snap.data();
+          const nouvelleQte = Math.max(0, (p.quantite || 0) - demandes.get(pids[idx]));
+          const majProduit = { quantite: nouvelleQte };
+          if (nouvelleQte <= 0) majProduit.statut = 'inactif';
+          tx.update(prodRefs[idx], majProduit);
+        });
+
+        tx.set(compteurRef, { commande: numeroCommande }, { merge: true });
+        tx.set(cmdRef, docCommande);
+        return docCommande;
+      });
+
       return { commande };
     }
 
-    if (url === '/api/commandes' && (options.method || 'GET') === 'GET') {
+    if (url === '/api/commandes' && methode === 'GET') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
-      const qRef = query(colCommandes(), where('acheteurId', '==', user.uid));
-      const snap = await getDocs(qRef);
-      const liste = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-      return { commandes: liste };
+      if (!user) throw creerErreurClient('Connexion requise', 401);
+      const snap = await colCommandes.where('acheteurId', '==', user.uid).get();
+      const commandes = snap.docs
+        .map((d) => ({ ...d.data(), id: d.id }))
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      return { commandes };
     }
 
-    if (url === '/api/ventes' && (options.method || 'GET') === 'GET') {
+    if (url === '/api/ventes' && methode === 'GET') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
-      const qRef = query(colCommandes(), where('vendeurIds', 'array-contains', user.uid));
-      const snap = await getDocs(qRef);
+      if (!user) throw creerErreurClient('Connexion requise', 401);
+      const snap = await colCommandes.where('vendeurIds', 'array-contains', user.uid).get();
       const ventes = snap.docs
-        .map(d => ({ id: d.id, ...d.data(), items: (d.data().items || []).filter(i => i.vendeurId === user.uid) }))
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        .map((d) => {
+          const data = d.data();
+          return {
+            ...data,
+            id: d.id,
+            items: (data.items || []).filter((i) => i.vendeurId === user.uid),
+          };
+        })
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
       return { ventes };
     }
 
-    if (url.match(/^\/api\/commandes\/([^/]+)\/statut$/) && (options.method || 'GET') === 'PATCH') {
-      const id = url.match(/^\/api\/commandes\/([^/]+)\/statut$/)[1];
+    const matchStatut = url.match(/^\/api\/commandes\/([^/]+)\/statut$/);
+    if (matchStatut && methode === 'PATCH') {
+      const id = decodeURIComponent(matchStatut[1]);
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
-      const body = options.corps ? JSON.parse(options.corps) : {};
-      const nouveau = body.statut;
+      if (!user) throw creerErreurClient('Connexion requise', 401);
 
-      const snap = await getDoc(doc(window.db, 'commandes', id));
-      if (!snap.exists()) throw Object.assign(new Error('Commande introuvable'), { status: 404 });
-      const commande = snap.data();
-      const acheteur = commande.acheteurId === user.uid;
-      const vendeur = commande.vendeurIds && commande.vendeurIds.includes(user.uid);
-      if (!acheteur && !vendeur) throw Object.assign(new Error('Accès refusé'), { status: 403 });
+      const body = corpsBrut ? JSON.parse(corpsBrut) : {};
+      const nouveau = body.statut;
+      const cmdRef = colCommandes.doc(id);
 
       const TRANSITIONS = {
         en_attente: ['confirmee', 'annulee'],
@@ -366,75 +630,119 @@ async function api(chemin, options = {}) {
         annulee: [],
       };
 
-      if (acheteur && !vendeur && nouveau !== 'annulee') throw Object.assign(new Error('Seul le vendeur peut mettre à jour le statut'), { status: 403 });
-      if (!TRANSITIONS[commande.statut] || !TRANSITIONS[commande.statut].includes(nouveau)) throw Object.assign(new Error(`Transition impossible : ${commande.statut} → ${nouveau}`), { status: 400 });
+      const commandeMaj = await window.db.runTransaction(async (tx) => {
+        const snap = await tx.get(cmdRef);
+        if (!docExiste(snap)) throw creerErreurClient('Commande introuvable', 404);
+        const commande = snap.data();
 
-      const misesAJour = { statut: nouveau };
-      if (nouveau === 'annulee') {
-        for (const ligne of commande.items) {
-          const produitRef = doc(window.db, 'produits', ligne.produitId);
-          await runTransaction(window.db, async (tx) => {
-            const psnap = await tx.get(produitRef);
-            const p = psnap.data();
-            const nouvelleQte = (p.quantite || 0) + ligne.quantite;
-            const m = { quantite: nouvelleQte };
-            if (p.statut === 'inactif' && nouvelleQte > 0) m.statut = 'actif';
-            tx.update(produitRef, m);
-          });
+        const acheteur = commande.acheteurId === user.uid;
+        const vendeur = Array.isArray(commande.vendeurIds) && commande.vendeurIds.includes(user.uid);
+        if (!acheteur && !vendeur) throw creerErreurClient('Accès refusé', 403);
+        if (acheteur && !vendeur && nouveau !== 'annulee') {
+          throw creerErreurClient('Seul le vendeur peut mettre à jour le statut', 403);
         }
-      }
+        if (!TRANSITIONS[commande.statut] || !TRANSITIONS[commande.statut].includes(nouveau)) {
+          throw creerErreurClient(`Transition impossible : ${commande.statut} → ${nouveau}`, 400);
+        }
 
-      await updateDoc(doc(window.db, 'commandes', id), misesAJour);
-      const snap2 = await getDoc(doc(window.db, 'commandes', id));
-      return { commande: { id: snap2.id, ...snap2.data() } };
+        const lecturesProduits = [];
+        if (nouveau === 'annulee' && Array.isArray(commande.items)) {
+          for (const ligne of commande.items) {
+            if (!ligne.produitId) continue;
+            const pRef = colProduits.doc(ligne.produitId);
+            const pSnap = await tx.get(pRef);
+            lecturesProduits.push({ pRef, pSnap, quantite: ligne.quantite || 0 });
+          }
+        }
+
+        for (const { pRef, pSnap, quantite } of lecturesProduits) {
+          if (!docExiste(pSnap)) continue;
+          const p = pSnap.data();
+          const nouvelleQte = (p.quantite || 0) + quantite;
+          const majP = { quantite: nouvelleQte };
+          if (p.statut === 'inactif' && nouvelleQte > 0) majP.statut = 'actif';
+          tx.update(pRef, majP);
+        }
+
+        tx.update(cmdRef, { statut: nouveau });
+        return { ...commande, id: snap.id, statut: nouveau };
+      });
+
+      return { commande: commandeMaj };
     }
 
-    // ---------- Stats ----------
-    if (url === '/api/stats' && (options.method || 'GET') === 'GET') {
+    // ---------- Statistiques vendeur ----------
+    if (url === '/api/stats' && methode === 'GET') {
       const user = window.auth.currentUser;
-      if (!user) throw Object.assign(new Error('Connexion requise'), { status: 401 });
+      if (!user) throw creerErreurClient('Connexion requise', 401);
 
-      const mesProduitsSnap = await getDocs(query(colProduits(), where('vendeurId', '==', user.uid)));
-      const mesProduits = mesProduitsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const [mesProduitsSnap, mesVentesSnap] = await Promise.all([
+        colProduits.where('vendeurId', '==', user.uid).get(),
+        colCommandes.where('vendeurIds', 'array-contains', user.uid).get(),
+      ]);
 
-      const mesVentesSnap = await getDocs(query(colCommandes(), where('vendeurIds', 'array-contains', user.uid)));
-      const mesVentes = mesVentesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const mesProduits = mesProduitsSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
+      const mesVentes = mesVentesSnap.docs.map((d) => ({ ...d.data(), id: d.id }));
 
       const chiffreAffaires = mesVentes
-        .filter(c => c.statut !== 'annulee')
-        .reduce((s, c) => s + (c.items || [])
-          .filter(i => i.vendeurId === user.uid)
-          .reduce((t, i) => t + i.prix * i.quantite, 0), 0);
+        .filter((c) => c.statut !== 'annulee')
+        .reduce(
+          (s, c) =>
+            s +
+            (c.items || [])
+              .filter((i) => i.vendeurId === user.uid)
+              .reduce((t, i) => t + i.prix * i.quantite, 0),
+          0
+        );
 
       return {
-        produitsActifs: mesProduits.filter(p => p.statut === 'actif').length,
+        produitsActifs: mesProduits.filter((p) => p.statut === 'actif').length,
         totalProduits: mesProduits.length,
         ventes: mesVentes.length,
         chiffreAffaires,
       };
     }
 
-    throw Object.assign(new Error('Route inconnue'), { status: 404 });
+    throw creerErreurClient('Route inconnue', 404);
   } catch (err) {
     throw erreurFirebase(err);
   }
 }
 
-/* ============ Helpers ============ */
+/* ============ Enrichissement vendeur (avec cache parallèle) ============ */
 async function vendeurPublic(uid) {
-  const snap = await getDoc(doc(window.db, 'profils', uid));
-  if (!snap.exists()) return null;
-  const u = snap.data();
-  return { id: u.id, nom: u.nom, ville: u.ville, telephone: u.telephone, membreDepuis: u.createdAt };
+  if (!uid || !window.db) return null;
+  if (cacheProfils.has(uid)) {
+    const u = cacheProfils.get(uid);
+    return u ? { id: u.id, nom: u.nom, ville: u.ville, telephone: u.telephone, membreDepuis: u.createdAt } : null;
+  }
+  try {
+    const snap = await window.db.collection('profils').doc(uid).get();
+    if (!docExiste(snap)) {
+      cacheProfils.set(uid, null);
+      return null;
+    }
+    const u = { id: snap.id, ...snap.data() };
+    cacheProfils.set(uid, u);
+    return { id: u.id, nom: u.nom, ville: u.ville, telephone: u.telephone, membreDepuis: u.createdAt };
+  } catch {
+    return null;
+  }
 }
 
 async function produitComplet(p) {
   return { ...p, vendeur: await vendeurPublic(p.vendeurId) };
 }
 
+async function enrichirProduits(liste) {
+  const uids = [...new Set(liste.map((p) => p.vendeurId).filter(Boolean))];
+  await Promise.all(uids.map((uid) => vendeurPublic(uid)));
+  return Promise.all(liste.map((p) => produitComplet(p)));
+}
+
 /* ============ Formatage ============ */
 function fc(montant) {
-  return new Intl.NumberFormat('fr-FR').format(Math.round(montant)) + ' FC';
+  return new Intl.NumberFormat('fr-FR').format(Math.round(montant || 0)) + ' FC';
 }
 
 function dateCourte(iso) {
@@ -446,7 +754,7 @@ function dateHeure(iso) {
 }
 
 function initiales(nom) {
-  return String(nom || '?').split(/\s+/).slice(0, 2).map(m => m[0] || '').join('').toUpperCase();
+  return String(nom || '?').split(/\s+/).slice(0, 2).map((m) => m[0] || '').join('').toUpperCase();
 }
 
 function e(chaine) {
@@ -456,8 +764,11 @@ function e(chaine) {
 }
 
 const LIBELLES_STATUT = {
-  en_attente: 'En attente', confirmee: 'Confirmée', expediee: 'Expédiée',
-  livree: 'Livrée', annulee: 'Annulée',
+  en_attente: 'En attente',
+  confirmee: 'Confirmée',
+  expediee: 'Expédiée',
+  livree: 'Livrée',
+  annulee: 'Annulée',
 };
 
 function badgeStatut(statut) {
@@ -469,12 +780,18 @@ function nbArticlesPanier() { return Etat.panier.reduce((s, l) => s + l.quantite
 function totalPanier() { return Etat.panier.reduce((s, l) => s + l.prix * l.quantite, 0); }
 
 function ajouterAuPanier(produit, quantite = 1) {
-  const ligne = Etat.panier.find(l => l.produitId === produit.id);
+  const ligne = Etat.panier.find((l) => l.produitId === produit.id);
   if (ligne) ligne.quantite += quantite;
   else {
     Etat.panier.push({
-      produitId: produit.id, nom: produit.nom, prix: produit.prix, image: produit.image,
-      vendeurId: produit.vendeurId, ville: produit.ville, quantite, stock: produit.quantite,
+      produitId: produit.id,
+      nom: produit.nom,
+      prix: produit.prix,
+      image: produit.image,
+      vendeurId: produit.vendeurId,
+      ville: produit.ville,
+      quantite,
+      stock: produit.quantite,
     });
   }
   sauverPanier();
