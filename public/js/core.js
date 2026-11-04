@@ -282,7 +282,21 @@ async function api(chemin, options = {}) {
         ? colProduits.where('vendeurId', '==', vendeur)
         : colProduits.where('statut', '==', 'actif');
 
-      const snap = await reqFirestore.get();
+      const snap = await Promise.race([
+        reqFirestore.get(),
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                creerErreurClient(
+                  'La base Cloud Firestore ne répond pas encore. Dans la Console Firebase (bwaka-ac664), cliquez sur Firestore > Créer une base de données, puis publiez les règles.',
+                  504
+                )
+              ),
+            8000
+          )
+        ),
+      ]);
       let liste = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 
       if (!inclureInactifs) {
