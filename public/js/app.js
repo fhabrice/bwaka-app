@@ -1,6 +1,73 @@
 'use strict';
 
-/* ============ Routeur & initialisation ============ */
+/* ============ Routeur, bandeau backend & initialisation ============ */
+
+function majBandeauBackend() {
+  let zone = document.getElementById('bandeau-backend');
+  if (Etat.modeBackend !== 'local' || sessionStorage.getItem('bwaka_masquer_bandeau') === '1') {
+    if (zone) zone.remove();
+    return;
+  }
+
+  if (!zone) {
+    zone = document.createElement('div');
+    zone.id = 'bandeau-backend';
+    zone.className = 'bandeau-backend';
+    const main = document.getElementById('app');
+    if (main && main.parentNode) main.parentNode.insertBefore(zone, main);
+  }
+
+  const projectId = (window.firebaseConfig && window.firebaseConfig.projectId) || 'bwaka-ac664';
+  let texte =
+    'Mode local de secours actif — Le site fonctionne normalement (catalogue, panier, commandes) pendant que Cloud Firestore est indisponible.';
+  let lienUrl = `https://console.firebase.google.com/u/0/project/${encodeURIComponent(projectId)}/firestore`;
+  let lienTexte = 'Ouvrir Firestore';
+
+  if (Etat.raisonModeLocal === 'base_absente') {
+    texte =
+      `Mode démonstration local actif — La base Cloud Firestore (${projectId}) n’est pas encore créée. ` +
+      `Tout le site est utilisable immédiatement ; créez la base Firestore pour synchroniser en ligne.`;
+  } else if (Etat.raisonModeLocal === 'regles_bloquees') {
+    texte =
+      `Mode démonstration local actif — La base Firestore (${projectId}) existe mais ses règles bloquent encore la lecture. ` +
+      `Publiez les règles Firestore pour passer en mode en ligne.`;
+    lienUrl = `https://console.firebase.google.com/u/0/project/${encodeURIComponent(projectId)}/firestore/databases/-default-/rules`;
+    lienTexte = 'Publier les règles';
+  }
+
+  zone.innerHTML = `
+    <div class="conteneur bandeau-backend-ligne">
+      <span>ℹ️ ${e(texte)}</span>
+      <div class="bandeau-backend-actions">
+        <a class="btn btn-primaire btn-petit" href="${e(lienUrl)}" target="_blank" rel="noopener">${e(lienTexte)}</a>
+        <button class="btn btn-ghost btn-petit" type="button" id="btn-reessayer-firebase">Réessayer</button>
+        <button class="bandeau-backend-fermer" type="button" id="btn-fermer-bandeau" aria-label="Masquer">✕</button>
+      </div>
+    </div>`;
+
+  document.getElementById('btn-fermer-bandeau')?.addEventListener('click', () => {
+    sessionStorage.setItem('bwaka_masquer_bandeau', '1');
+    zone.remove();
+  });
+
+  document.getElementById('btn-reessayer-firebase')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Vérification…';
+    const mode = await initialiserBackend();
+    await synchroniserSessionActive();
+    majBandeauBackend();
+    majZoneCompte();
+    if (mode === 'firebase') {
+      toast('Connecté à Cloud Firestore (bwaka-ac664) !', 'succes');
+    } else {
+      toast('Cloud Firestore ne répond pas encore — le mode local reste actif.', 'info');
+    }
+    router();
+  });
+}
+
+window.majBandeauBackend = majBandeauBackend;
 
 function majZoneCompte() {
   const zone = document.getElementById('zone-compte');
@@ -31,8 +98,9 @@ function majZoneCompte() {
     });
     document.getElementById('btn-deconnexion')?.addEventListener('click', async () => {
       try {
-        if (window.auth && typeof window.auth.signOut === 'function') {
-          await window.auth.signOut();
+        const authActive = obtenirAuth();
+        if (authActive && typeof authActive.signOut === 'function') {
+          await authActive.signOut();
         }
       } catch {}
       Etat.token = null;
@@ -48,6 +116,8 @@ function majZoneCompte() {
       <a class="btn btn-primaire" href="#/inscription">S'inscrire</a>`;
   }
 }
+
+window.majZoneCompte = majZoneCompte;
 
 function majBarreCategories() {
   const barre = document.getElementById('barre-categories');
@@ -211,45 +281,48 @@ document.getElementById('btn-burger')?.addEventListener('click', () => {
   btn.setAttribute('aria-expanded', String(ouvert));
 });
 
-/* ============ Démarrage ============ */
-(async function init() {
-  Etat.referentiels = chargerReferentiels();
+async function synchroniserSessionActive() {
+  const authActive = obtenirAuth();
+  if (!authActive || typeof authActive.onAuthStateChanged !== 'function') return;
 
-  if (window.auth && typeof window.auth.onAuthStateChanged === 'function') {
-    try {
-      await Promise.race([
-        new Promise((resolve) => {
-          let initial = true;
-          window.auth.onAuthStateChanged(async (user) => {
-            if (user) {
-              try {
-                const { utilisateur } = await api('/api/auth/moi');
-                Etat.utilisateur = utilisateur;
-                sauverSession();
-              } catch {
-                // Conserve la session locale éventuelle si hors-ligne temporaire
-              }
-            } else {
+  try {
+    await Promise.race([
+      new Promise((resolve) => {
+        const unsub = authActive.onAuthStateChanged(async (user) => {
+          unsub();
+          if (user) {
+            try {
+              const { utilisateur } = await api('/api/auth/moi');
+              Etat.utilisateur = utilisateur;
+              sauverSession();
+            } catch {
               Etat.token = null;
               Etat.utilisateur = null;
               sauverSession();
             }
-            majZoneCompte();
-            if (initial) {
-              initial = false;
-              resolve();
-            }
-          });
-        }),
-        new Promise((resolve) => setTimeout(resolve, 4000)),
-      ]);
-    } catch {
-      Etat.token = null;
-      Etat.utilisateur = null;
-      sauverSession();
-    }
+          } else {
+            Etat.token = null;
+            Etat.utilisateur = null;
+            sauverSession();
+          }
+          resolve();
+        });
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3500)),
+    ]);
+  } catch {
+    Etat.token = null;
+    Etat.utilisateur = null;
+    sauverSession();
   }
+}
 
+/* ============ Démarrage ============ */
+(async function init() {
+  Etat.referentiels = chargerReferentiels();
+  await initialiserBackend();
+  await synchroniserSessionActive();
+  majBandeauBackend();
   majZoneCompte();
   majBadgePanier();
   majBarreCategories();

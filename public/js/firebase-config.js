@@ -27,7 +27,7 @@ function initialiserFirebase() {
   }
 
   if (typeof window.firebase === 'undefined' || typeof window.firebase.initializeApp !== 'function') {
-    console.warn('SDK Firebase non chargé (mode hors-ligne ou CDN inaccessible).');
+    console.warn('SDK Firebase non chargé (mode local de repli sera utilisé).');
     return;
   }
 
@@ -35,8 +35,16 @@ function initialiserFirebase() {
     ? window.firebase.app()
     : window.firebase.initializeApp(firebaseConfig);
 
+  const db = window.firebase.firestore();
+  try {
+    // Évite les blocages WebChannel sur certains réseaux mobiles / proxys
+    db.settings({ experimentalAutoDetectLongPolling: true, merge: true });
+  } catch {
+    try { db.settings({ experimentalAutoDetectLongPolling: true }); } catch {}
+  }
+
   window.firebaseApp = app;
-  window.db = window.firebase.firestore();
+  window.db = db;
   window.auth = window.firebase.auth();
   window.storage = typeof window.firebase.storage === 'function' ? window.firebase.storage() : null;
 }

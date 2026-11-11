@@ -436,12 +436,59 @@ async function testerParcoursComplet(baseUrl) {
   window.close();
 }
 
+async function testerRepliAutomatiqueSiFirestoreAbsent(baseUrl) {
+  console.log('\n=== 3. Vérification du repli automatique si Cloud Firestore renvoie 404 ===');
+  const erreurs = [];
+  const vc = new VirtualConsole();
+  vc.on('jsdomError', (e) => erreurs.push('jsdomError: ' + e.message));
+
+  const dom = await JSDOM.fromURL(baseUrl + '/', {
+    runScripts: 'dangerously',
+    resources: 'usable',
+    pretendToBeVisual: true,
+    virtualConsole: vc,
+    beforeParse(window) {
+      window.scrollTo = () => {};
+      window.confirm = () => true;
+      window.fetch = async (url, opts) => {
+        if (String(url).includes('firestore.googleapis.com')) {
+          return { ok: false, status: 404 };
+        }
+        return fetch(url, opts);
+      };
+    },
+  });
+
+  const { window } = dom;
+  const { document } = window;
+  await wait(600);
+
+  const htmlAccueil = document.getElementById('app').innerHTML;
+  assert.ok(!htmlAccueil.includes('Une erreur est survenue'), 'Aucune page erreur affichée');
+  assert.ok(htmlAccueil.includes('Smartphone Samsung Galaxy A15'), 'Catalogue démo de 12 produits affiché immédiatement');
+  assert.ok(document.getElementById('bandeau-backend'), 'Bandeau informatif affiché');
+  console.log('OK  Catalogue de 12 produits affiché immédiatement sans erreur même si Firestore est absent');
+
+  const conn = await window.api('/api/auth/connexion', {
+    method: 'POST',
+    corps: { email: 'jean@bwaka.cd', motDePasse: 'demo123' },
+  });
+  assert.strictEqual(conn.utilisateur.nom, 'Jean Bosco Nsimba');
+  console.log('OK  Connexion et utilisation complète possibles en mode local de secours');
+
+  try {
+    await window.firebaseApp.delete();
+  } catch {}
+  window.close();
+}
+
 async function main() {
   const srv = await demarrerServeurTest();
   const baseUrl = `http://127.0.0.1:${srv.address().port}`;
   try {
     await testerChargementSdkReel(baseUrl);
     await testerParcoursComplet(baseUrl);
+    await testerRepliAutomatiqueSiFirestoreAbsent(baseUrl);
     console.log('\nToutes les vérifications ont réussi sans aucune erreur.');
   } finally {
     srv.close();
