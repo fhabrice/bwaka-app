@@ -6,6 +6,8 @@ const Etat = {
   utilisateur: JSON.parse(localStorage.getItem('bwaka_utilisateur') || 'null'),
   panier: JSON.parse(localStorage.getItem('bwaka_panier') || '[]'),
   referentiels: { categories: [], methodesPaiement: [], villes: [] },
+  modeBackend: 'firebase', // 'firebase' | 'local'
+  raisonModeLocal: null,   // null | 'base_absente' | 'regles_bloquees' | 'hors_ligne'
 };
 
 const cacheProfils = new Map();
@@ -35,6 +37,376 @@ function chargerReferentiels() {
   return Etat.referentiels;
 }
 
+/* ============ Base locale de repli automatique (localStorage) ============
+   Permet à l'application (catalogue, panier, comptes, publication, commandes, ventes)
+   de fonctionner immédiatement même tant que Cloud Firestore n'est pas encore créé
+   ou configuré dans la Console Firebase. */
+function creerBaseLocale() {
+  const CLE_DB = 'bwaka_base_locale_v1';
+  const CLE_AUTH = 'bwaka_auth_local_v1';
+  const listeners = new Set();
+
+  function cloner(v) {
+    return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+  }
+
+  function construireEtatInitial() {
+    const profils = {
+      u1: {
+        id: 'u1',
+        nom: 'Jean Bosco Nsimba',
+        email: 'jean@bwaka.cd',
+        telephone: '+243 970 000 001',
+        ville: 'Goma',
+        createdAt: '2026-09-12T08:00:00.000Z',
+      },
+      u2: {
+        id: 'u2',
+        nom: 'Grace Mbuyi',
+        email: 'grace@bwaka.cd',
+        telephone: '+243 990 000 002',
+        ville: 'Kinshasa',
+        createdAt: '2026-09-20T10:30:00.000Z',
+      },
+      u3: {
+        id: 'u3',
+        nom: 'Espérance Kavira',
+        email: 'esperance@bwaka.cd',
+        telephone: '+243 971 000 003',
+        ville: 'Bukavu',
+        createdAt: '2026-10-01T14:15:00.000Z',
+      },
+    };
+
+    const comptesAuth = {
+      'jean@bwaka.cd': { uid: 'u1', email: 'jean@bwaka.cd', mdp: 'demo123', displayName: 'Jean Bosco Nsimba' },
+      'grace@bwaka.cd': { uid: 'u2', email: 'grace@bwaka.cd', mdp: 'demo123', displayName: 'Grace Mbuyi' },
+      'esperance@bwaka.cd': { uid: 'u3', email: 'esperance@bwaka.cd', mdp: 'demo123', displayName: 'Espérance Kavira' },
+    };
+
+    const vendeursCycle = ['u1', 'u2', 'u3'];
+    const produits = {};
+    const baseTemps = Date.parse('2026-10-25T12:00:00.000Z');
+    (Referentiels.produitsDemo || []).forEach((item, idx) => {
+      const id = `p${idx + 1}`;
+      produits[id] = {
+        id,
+        nom: item.nom,
+        description: item.description,
+        prix: item.prix,
+        categorie: item.categorie,
+        quantite: item.quantite,
+        image: item.image || null,
+        vendeurId: vendeursCycle[idx % vendeursCycle.length],
+        ville: item.ville,
+        statut: 'actif',
+        createdAt: new Date(baseTemps - idx * 3600000).toISOString(),
+      };
+    });
+
+    return {
+      autoId: 100,
+      collections: {
+        profils,
+        produits,
+        commandes: {},
+        compteurs: { global: { commande: 1000 } },
+      },
+      comptesAuth,
+    };
+  }
+
+  function chargerEtat() {
+    try {
+      const brut = localStorage.getItem(CLE_DB);
+      if (brut) {
+        const parsed = JSON.parse(brut);
+        if (parsed && parsed.collections && parsed.comptesAuth) return parsed;
+      }
+    } catch {}
+    const init = construireEtatInitial();
+    sauverEtat(init);
+    return init;
+  }
+
+  function sauverEtat(st) {
+    try {
+      localStorage.setItem(CLE_DB, JSON.stringify(st));
+    } catch {}
+  }
+
+  let state = chargerEtat();
+
+  function creerUserObj(entree) {
+    if (!entree) return null;
+    return {
+      uid: entree.uid,
+      email: entree.email,
+      displayName: entree.displayName || '',
+      async updateProfile({ displayName }) {
+        entree.displayName = displayName || '';
+        sauverEtat(state);
+      },
+      async getIdToken() {
+        return `local_${entree.uid}`;
+      },
+    };
+  }
+
+  function chargerCurrentUser() {
+    try {
+      const email = localStorage.getItem(CLE_AUTH);
+      if (email && state.comptesAuth[email]) {
+        return creerUserObj(state.comptesAuth[email]);
+      }
+    } catch {}
+    return null;
+  }
+
+  let currentUser = chargerCurrentUser();
+
+  function getCol(nom) {
+    if (!state.collections[nom]) state.collections[nom] = {};
+    return state.collections[nom];
+  }
+
+  function creerSnap(id, data) {
+    const existe = data !== undefined;
+    const copie = existe ? cloner(data) : undefined;
+    return {
+      id,
+      get exists() {
+        return existe;
+      },
+      data() {
+        return existe ? cloner(copie) : undefined;
+      },
+    };
+  }
+
+  function creerDocRef(nomCol, idOpt) {
+    if (!idOpt) {
+      state.autoId = (state.autoId || 100) + 1;
+      sauverEtat(state);
+    }
+    const id = idOpt || `${nomCol}_${Date.now().toString(36)}_${state.autoId}`;
+    return {
+      id,
+      async get() {
+        const col = getCol(nomCol);
+        return creerSnap(id, col[id]);
+      },
+      async set(val, opts) {
+        const col = getCol(nomCol);
+        if (opts && opts.merge && col[id]) {
+          col[id] = { ...col[id], ...cloner(val) };
+        } else {
+          col[id] = cloner(val);
+        }
+        sauverEtat(state);
+      },
+      async update(val) {
+        const col = getCol(nomCol);
+        if (!col[id]) throw Object.assign(new Error('Document introuvable'), { code: 'not-found' });
+        col[id] = { ...col[id], ...cloner(val) };
+        sauverEtat(state);
+      },
+      async delete() {
+        const col = getCol(nomCol);
+        delete col[id];
+        sauverEtat(state);
+      },
+    };
+  }
+
+  function creerQuery(nomCol, filtres = []) {
+    return {
+      where(champ, op, valeur) {
+        return creerQuery(nomCol, [...filtres, { champ, op, valeur }]);
+      },
+      async get() {
+        const col = getCol(nomCol);
+        const docs = [];
+        for (const [id, data] of Object.entries(col)) {
+          const ok = filtres.every(({ champ, op, valeur }) => {
+            if (op === '==') return data[champ] === valeur;
+            if (op === 'array-contains') return Array.isArray(data[champ]) && data[champ].includes(valeur);
+            return false;
+          });
+          if (ok) docs.push(creerSnap(id, data));
+        }
+        return { docs, empty: docs.length === 0, size: docs.length };
+      },
+    };
+  }
+
+  const db = {
+    collection(nom) {
+      return {
+        doc: (id) => creerDocRef(nom, id),
+        where: (champ, op, valeur) => creerQuery(nom, [{ champ, op, valeur }]),
+        get: () => creerQuery(nom, []).get(),
+        async add(val) {
+          const ref = creerDocRef(nom);
+          await ref.set(val);
+          return ref;
+        },
+      };
+    },
+    batch() {
+      const ops = [];
+      return {
+        set(ref, val, opts) { ops.push(() => ref.set(val, opts)); },
+        update(ref, val) { ops.push(() => ref.update(val)); },
+        delete(ref) { ops.push(() => ref.delete()); },
+        async commit() {
+          for (const op of ops) await op();
+        },
+      };
+    },
+    async runTransaction(fn) {
+      const ecritures = [];
+      const tx = {
+        get: (ref) => ref.get(),
+        set: (ref, val, opts) => { ecritures.push(() => ref.set(val, opts)); },
+        update: (ref, val) => { ecritures.push(() => ref.update(val)); },
+      };
+      const res = await fn(tx);
+      for (const w of ecritures) await w();
+      return res;
+    },
+  };
+
+  function notifier() {
+    for (const cb of listeners) cb(currentUser);
+  }
+
+  const auth = {
+    get currentUser() {
+      return currentUser;
+    },
+    onAuthStateChanged(cb) {
+      listeners.add(cb);
+      setTimeout(() => cb(currentUser), 0);
+      return () => listeners.delete(cb);
+    },
+    async createUserWithEmailAndPassword(email, mdp) {
+      const emailNorm = String(email).trim().toLowerCase();
+      if (state.comptesAuth[emailNorm]) {
+        throw Object.assign(new Error('Email in use'), { code: 'auth/email-already-in-use' });
+      }
+      state.autoId = (state.autoId || 100) + 1;
+      const uid = `u_${Date.now().toString(36)}_${state.autoId}`;
+      const entree = { uid, email: emailNorm, mdp: String(mdp), displayName: '' };
+      state.comptesAuth[emailNorm] = entree;
+      sauverEtat(state);
+      try { localStorage.setItem(CLE_AUTH, emailNorm); } catch {}
+      currentUser = creerUserObj(entree);
+      notifier();
+      return { user: currentUser };
+    },
+    async signInWithEmailAndPassword(email, mdp) {
+      const emailNorm = String(email).trim().toLowerCase();
+      const entree = state.comptesAuth[emailNorm];
+      if (!entree || entree.mdp !== String(mdp)) {
+        throw Object.assign(new Error('Invalid credentials'), { code: 'auth/invalid-credential' });
+      }
+      try { localStorage.setItem(CLE_AUTH, emailNorm); } catch {}
+      currentUser = creerUserObj(entree);
+      notifier();
+      return { user: currentUser };
+    },
+    async signOut() {
+      try { localStorage.removeItem(CLE_AUTH); } catch {}
+      currentUser = null;
+      notifier();
+    },
+  };
+
+  return { db, auth };
+}
+
+const BaseLocale = creerBaseLocale();
+
+function obtenirDb() {
+  return Etat.modeBackend === 'local' ? BaseLocale.db : window.db;
+}
+
+function obtenirAuth() {
+  return Etat.modeBackend === 'local' ? BaseLocale.auth : window.auth;
+}
+
+function basculerEnModeLocal(raison = 'hors_ligne') {
+  if (Etat.modeBackend !== 'local') {
+    Etat.modeBackend = 'local';
+    Etat.raisonModeLocal = raison;
+    cacheProfils.clear();
+    const userLocal = BaseLocale.auth.currentUser;
+    if (!userLocal) {
+      Etat.token = null;
+      Etat.utilisateur = null;
+      sauverSession();
+    }
+    if (typeof window.majBandeauBackend === 'function') window.majBandeauBackend();
+    if (typeof window.majZoneCompte === 'function') window.majZoneCompte();
+  }
+}
+
+/* Sonde rapide de disponibilité Cloud Firestore :
+   Vérifie en ~300 ms si la base (default) du projet Firebase existe et accepte la lecture,
+   sans bloquer l'interface pendant de longues secondes si Firestore n'est pas encore créé. */
+async function initialiserBackend() {
+  cacheProfils.clear();
+
+  // Cas des tests automatisés avec adaptateur mémoire injecté (sans firebaseApp réel)
+  if (window.db && window.auth && !window.firebaseApp) {
+    Etat.modeBackend = 'firebase';
+    Etat.raisonModeLocal = null;
+    return Etat.modeBackend;
+  }
+
+  if (!window.db || !window.auth || !window.firebaseConfig || !window.firebaseConfig.projectId) {
+    Etat.modeBackend = 'local';
+    Etat.raisonModeLocal = 'hors_ligne';
+    return Etat.modeBackend;
+  }
+
+  const { projectId, apiKey } = window.firebaseConfig;
+  const urlSonde =
+    `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}` +
+    `/databases/(default)/documents/produits?pageSize=1&key=${encodeURIComponent(apiKey || '')}`;
+
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, 3500);
+
+  try {
+    const res = await fetch(urlSonde, ctrl ? { signal: ctrl.signal } : undefined);
+    clearTimeout(timer);
+
+    if (res.ok) {
+      Etat.modeBackend = 'firebase';
+      Etat.raisonModeLocal = null;
+    } else if (res.status === 404) {
+      Etat.modeBackend = 'local';
+      Etat.raisonModeLocal = 'base_absente';
+    } else if (res.status === 401 || res.status === 403) {
+      Etat.modeBackend = 'local';
+      Etat.raisonModeLocal = 'regles_bloquees';
+    } else {
+      Etat.modeBackend = 'local';
+      Etat.raisonModeLocal = 'hors_ligne';
+    }
+  } catch {
+    clearTimeout(timer);
+    Etat.modeBackend = 'local';
+    Etat.raisonModeLocal = 'hors_ligne';
+  }
+
+  return Etat.modeBackend;
+}
+
+window.initialiserBackend = initialiserBackend;
+
 /* ============ Helpers Firebase / Firestore ============ */
 function docExiste(snap) {
   if (!snap) return false;
@@ -46,15 +418,6 @@ function creerErreurClient(message, status = 400) {
   err.status = status;
   err._dejaFormate = true;
   return err;
-}
-
-function verifierFirebase() {
-  if (!window.db || !window.auth) {
-    throw creerErreurClient(
-      'Connexion à Firebase indisponible. Vérifiez votre connexion Internet ou la configuration Firebase (public/js/firebase-config.js).',
-      503
-    );
-  }
 }
 
 function erreurFirebase(err, statutParDefaut = 500) {
@@ -74,16 +437,16 @@ function erreurFirebase(err, statutParDefaut = 500) {
     'auth/user-disabled': ['Ce compte utilisateur a été désactivé.', 403],
     'auth/too-many-requests': ['Trop de tentatives. Veuillez patienter quelques instants avant de réessayer.', 429],
     'auth/operation-not-allowed': [
-      'La connexion E-mail/Mot de passe n’est pas activée dans la console Firebase (Authentication > Sign-in method).',
+      'La connexion E-mail/Mot de passe n’est pas activée dans la Console Firebase (Authentication > Mode de connexion).',
       500,
     ],
     'auth/configuration-not-found': [
-      'L’authentification Firebase n’est pas encore activée pour ce projet (Console Firebase > Authentication > Commencer).',
+      'L’authentification Firebase n’est pas encore activée (Console Firebase > Authentication > Commencer).',
       500,
     ],
     'auth/network-request-failed': ['Impossible de joindre Firebase. Vérifiez votre connexion Internet.', 503],
     'permission-denied': [
-      'Accès refusé par les règles Firestore. Déployez firestore.rules ou activez les règles dans la Console Firebase.',
+      'Accès refusé par les règles Firestore. Publiez firestore.rules dans la Console Firebase.',
       403,
     ],
     'unavailable': ['Service Firestore temporairement indisponible. Vérifiez votre connexion Internet.', 503],
@@ -94,13 +457,6 @@ function erreurFirebase(err, statutParDefaut = 500) {
     if (code === cle || code.endsWith('/' + cle)) {
       return creerErreurClient(msg, st);
     }
-  }
-
-  if (code.includes('not-found') && brut.toLowerCase().includes('database')) {
-    return creerErreurClient(
-      'La base Cloud Firestore n’est pas encore créée dans la Console Firebase du projet bwaka-ac664.',
-      500
-    );
   }
 
   const out = new Error(brut || 'Une erreur inattendue est survenue.');
@@ -149,8 +505,8 @@ async function compresserImageDataUrl(file, maxDim = 800, qualite = 0.78) {
   });
 }
 
-async function assurerProfilUtilisateur(user, defauts = {}) {
-  const refProfil = window.db.collection('profils').doc(user.uid);
+async function assurerProfilUtilisateur(dbActive, user, defauts = {}) {
+  const refProfil = dbActive.collection('profils').doc(user.uid);
   const snap = await refProfil.get();
   if (docExiste(snap)) {
     const data = { id: user.uid, ...snap.data() };
@@ -189,15 +545,22 @@ async function api(chemin, options = {}) {
   }
 
   try {
-    // ---------- Référentiels (statique, aucune requête réseau) ----------
+    // ---------- Référentiels ----------
     if (url === '/api/referentiels' && methode === 'GET') {
       return { ...chargerReferentiels() };
     }
 
-    verifierFirebase();
-    const colProduits = window.db.collection('produits');
-    const colCommandes = window.db.collection('commandes');
-    const colProfils = window.db.collection('profils');
+    let dbActive = obtenirDb();
+    let authActive = obtenirAuth();
+    if (!dbActive || !authActive) {
+      basculerEnModeLocal('hors_ligne');
+      dbActive = obtenirDb();
+      authActive = obtenirAuth();
+    }
+
+    let colProduits = dbActive.collection('produits');
+    let colCommandes = dbActive.collection('commandes');
+    let colProfils = dbActive.collection('profils');
 
     // ---------- Authentification ----------
     if (url === '/api/auth/inscription' && methode === 'POST') {
@@ -214,7 +577,7 @@ async function api(chemin, options = {}) {
         throw creerErreurClient('Le mot de passe doit contenir au moins 6 caractères', 400);
       }
 
-      const cred = await window.auth.createUserWithEmailAndPassword(emailNorm, String(motDePasse));
+      const cred = await authActive.createUserWithEmailAndPassword(emailNorm, String(motDePasse));
       const user = cred.user;
       try {
         if (typeof user.updateProfile === 'function') {
@@ -247,9 +610,9 @@ async function api(chemin, options = {}) {
         throw creerErreurClient('Veuillez saisir votre e-mail et votre mot de passe', 400);
       }
       const emailNorm = String(email).trim().toLowerCase();
-      const cred = await window.auth.signInWithEmailAndPassword(emailNorm, String(motDePasse));
+      const cred = await authActive.signInWithEmailAndPassword(emailNorm, String(motDePasse));
       const user = cred.user;
-      const profil = await assurerProfilUtilisateur(user, { email: emailNorm });
+      const profil = await assurerProfilUtilisateur(dbActive, user, { email: emailNorm });
       const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : user.uid;
       Etat.token = token;
       Etat.utilisateur = profil;
@@ -258,9 +621,9 @@ async function api(chemin, options = {}) {
     }
 
     if (url === '/api/auth/moi' && methode === 'GET') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Non connecté', 401);
-      const profil = await assurerProfilUtilisateur(user);
+      const profil = await assurerProfilUtilisateur(dbActive, user);
       const token = typeof user.getIdToken === 'function' ? await user.getIdToken() : user.uid;
       Etat.token = token;
       Etat.utilisateur = profil;
@@ -277,26 +640,32 @@ async function api(chemin, options = {}) {
       const tri = searchParams.get('tri') || '';
       const inclureInactifs = searchParams.get('inclureInactifs') === '1';
 
-      // Requête à champ unique pour éviter toute erreur d'index composite Firestore
-      const reqFirestore = vendeur
-        ? colProduits.where('vendeurId', '==', vendeur)
-        : colProduits.where('statut', '==', 'actif');
+      let snap;
+      try {
+        const reqFirestore = vendeur
+          ? colProduits.where('vendeurId', '==', vendeur)
+          : colProduits.where('statut', '==', 'actif');
 
-      const snap = await Promise.race([
-        reqFirestore.get(),
-        new Promise((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                creerErreurClient(
-                  'La base Cloud Firestore ne répond pas encore. Dans la Console Firebase (bwaka-ac664), cliquez sur Firestore > Créer une base de données, puis publiez les règles.',
-                  504
-                )
-              ),
-            8000
-          )
-        ),
-      ]);
+        snap = await Promise.race([
+          reqFirestore.get(),
+          new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'unavailable' })), 6000)),
+        ]);
+      } catch (errLecture) {
+        // Repli transparent vers la base locale si Cloud Firestore est inaccessible
+        if (Etat.modeBackend === 'firebase' && window.firebaseApp) {
+          const codeErr = String((errLecture && errLecture.code) || '');
+          basculerEnModeLocal(codeErr.includes('permission') ? 'regles_bloquees' : 'hors_ligne');
+          dbActive = obtenirDb();
+          colProduits = dbActive.collection('produits');
+          const reqLocal = vendeur
+            ? colProduits.where('vendeurId', '==', vendeur)
+            : colProduits.where('statut', '==', 'actif');
+          snap = await reqLocal.get();
+        } else {
+          throw errLecture;
+        }
+      }
+
       let liste = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 
       if (!inclureInactifs) {
@@ -326,9 +695,9 @@ async function api(chemin, options = {}) {
     }
 
     if (url === '/api/produits/demo' && methode === 'POST') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise pour importer les produits', 401);
-      await assurerProfilUtilisateur(user);
+      await assurerProfilUtilisateur(dbActive, user);
 
       const existantsSnap = await colProduits.where('vendeurId', '==', user.uid).get();
       const nomsExistants = new Set(
@@ -340,7 +709,7 @@ async function api(chemin, options = {}) {
       );
 
       if (aCreer.length > 0) {
-        const batch = window.db.batch();
+        const batch = dbActive.batch();
         const maintenant = Date.now();
         aCreer.forEach((item, idx) => {
           const docRef = colProduits.doc();
@@ -373,7 +742,7 @@ async function api(chemin, options = {}) {
     }
 
     if (url === '/api/produits' && methode === 'POST') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const body = corpsBrut ? JSON.parse(corpsBrut) : {};
@@ -406,7 +775,7 @@ async function api(chemin, options = {}) {
 
     if (matchProduit && methode === 'PUT') {
       const id = decodeURIComponent(matchProduit[1]);
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const docRef = colProduits.doc(id);
@@ -443,7 +812,7 @@ async function api(chemin, options = {}) {
 
     if (matchProduit && methode === 'DELETE') {
       const id = decodeURIComponent(matchProduit[1]);
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const docRef = colProduits.doc(id);
@@ -459,7 +828,7 @@ async function api(chemin, options = {}) {
 
     // ---------- Upload d'image ----------
     if (url === '/api/upload' && methode === 'POST') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const file = options.corps instanceof FormData ? options.corps.get('image') : null;
@@ -471,7 +840,7 @@ async function api(chemin, options = {}) {
         throw creerErreurClient('L’image ne doit pas dépasser 5 Mo', 400);
       }
 
-      if (window.storage && typeof window.storage.ref === 'function') {
+      if (Etat.modeBackend === 'firebase' && window.storage && typeof window.storage.ref === 'function') {
         try {
           const nomFichier = file.name || 'image.jpg';
           const point = nomFichier.lastIndexOf('.');
@@ -484,10 +853,7 @@ async function api(chemin, options = {}) {
             new Promise((_, reject) => setTimeout(() => reject(new Error('Storage timeout')), 6000)),
           ]);
           return { url: urlDownload };
-        } catch {
-          // Repli automatique (plan gratuit Spark sans Firebase Storage activé) :
-          // compression côté navigateur en JPEG léger stocké dans le document produit.
-        }
+        } catch {}
       }
 
       const dataUrl = await compresserImageDataUrl(file);
@@ -496,7 +862,7 @@ async function api(chemin, options = {}) {
 
     // ---------- Commandes ----------
     if (url === '/api/commandes' && methode === 'POST') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const body = corpsBrut ? JSON.parse(corpsBrut) : {};
@@ -512,7 +878,6 @@ async function api(chemin, options = {}) {
         throw creerErreurClient('Méthode de paiement invalide', 400);
       }
 
-      // Regrouper les quantités demandées par produitId
       const demandes = new Map();
       for (const item of items) {
         const pid = String(item.produitId || '').trim();
@@ -522,10 +887,9 @@ async function api(chemin, options = {}) {
       }
 
       const cmdRef = colCommandes.doc();
-      const compteurRef = window.db.collection('compteurs').doc('global');
+      const compteurRef = dbActive.collection('compteurs').doc('global');
 
-      const commande = await window.db.runTransaction(async (tx) => {
-        // 1. Toutes les lectures en premier (exigence des transactions Firestore)
+      const commande = await dbActive.runTransaction(async (tx) => {
         const pids = [...demandes.keys()];
         const prodRefs = pids.map((pid) => colProduits.doc(pid));
         const prodSnaps = [];
@@ -582,7 +946,6 @@ async function api(chemin, options = {}) {
           vendeurIds: [...vendeurIds],
         };
 
-        // 2. Toutes les écritures ensuite
         prodSnaps.forEach((snap, idx) => {
           const p = snap.data();
           const nouvelleQte = Math.max(0, (p.quantite || 0) - demandes.get(pids[idx]));
@@ -600,7 +963,7 @@ async function api(chemin, options = {}) {
     }
 
     if (url === '/api/commandes' && methode === 'GET') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
       const snap = await colCommandes.where('acheteurId', '==', user.uid).get();
       const commandes = snap.docs
@@ -610,7 +973,7 @@ async function api(chemin, options = {}) {
     }
 
     if (url === '/api/ventes' && methode === 'GET') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
       const snap = await colCommandes.where('vendeurIds', 'array-contains', user.uid).get();
       const ventes = snap.docs
@@ -629,7 +992,7 @@ async function api(chemin, options = {}) {
     const matchStatut = url.match(/^\/api\/commandes\/([^/]+)\/statut$/);
     if (matchStatut && methode === 'PATCH') {
       const id = decodeURIComponent(matchStatut[1]);
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const body = corpsBrut ? JSON.parse(corpsBrut) : {};
@@ -644,7 +1007,7 @@ async function api(chemin, options = {}) {
         annulee: [],
       };
 
-      const commandeMaj = await window.db.runTransaction(async (tx) => {
+      const commandeMaj = await dbActive.runTransaction(async (tx) => {
         const snap = await tx.get(cmdRef);
         if (!docExiste(snap)) throw creerErreurClient('Commande introuvable', 404);
         const commande = snap.data();
@@ -687,7 +1050,7 @@ async function api(chemin, options = {}) {
 
     // ---------- Statistiques vendeur ----------
     if (url === '/api/stats' && methode === 'GET') {
-      const user = window.auth.currentUser;
+      const user = authActive.currentUser;
       if (!user) throw creerErreurClient('Connexion requise', 401);
 
       const [mesProduitsSnap, mesVentesSnap] = await Promise.all([
@@ -725,13 +1088,14 @@ async function api(chemin, options = {}) {
 
 /* ============ Enrichissement vendeur (avec cache parallèle) ============ */
 async function vendeurPublic(uid) {
-  if (!uid || !window.db) return null;
+  const dbActive = obtenirDb();
+  if (!uid || !dbActive) return null;
   if (cacheProfils.has(uid)) {
     const u = cacheProfils.get(uid);
     return u ? { id: u.id, nom: u.nom, ville: u.ville, telephone: u.telephone, membreDepuis: u.createdAt } : null;
   }
   try {
-    const snap = await window.db.collection('profils').doc(uid).get();
+    const snap = await dbActive.collection('profils').doc(uid).get();
     if (!docExiste(snap)) {
       cacheProfils.set(uid, null);
       return null;

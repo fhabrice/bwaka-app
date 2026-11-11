@@ -400,8 +400,11 @@ Vues.connexion = {
             <button class="btn btn-primaire btn-bloc" type="submit">Se connecter</button>
           </form>
           <div class="compte-demo">
-            <strong>Nouveau sur Bwaka.cd ?</strong>
-            <a href="#/inscription" style="color:var(--bleu);font-weight:600">Créez gratuitement votre compte membre</a> pour acheter et vendre partout en RDC.
+            ${Etat.modeBackend === 'local'
+              ? `<strong>Comptes de démonstration locale (mot de passe : demo123)</strong>
+                 jean@bwaka.cd · grace@bwaka.cd · esperance@bwaka.cd`
+              : `<strong>Nouveau sur Bwaka.cd ?</strong>
+                 <a href="#/inscription" style="color:var(--bleu);font-weight:600">Créez gratuitement votre compte membre</a> pour acheter et vendre partout en RDC.`}
           </div>
         </div>
       </div>`;
