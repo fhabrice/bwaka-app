@@ -1,10 +1,11 @@
 {
   "name": "bwaka-app",
-  "version": "1.0.0",
-  "description": "Plateforme de vente en ligne en RDC — marketplace ouverte à tous les membres",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Plateforme de vente en ligne en RDC — marketplace ouverte à tous les membres (backend Firebase)",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test-rendu.js"
   },
   "repository": {
     "type": "git",
@@ -17,11 +18,8 @@
     "url": "https://github.com/fhabrice/bwaka-app/issues"
   },
   "homepage": "https://github.com/fhabrice/bwaka-app#readme",
-  "dependencies": {
-    "express": "^5.3.0",
-    "multer": "^2.5.0"
-  },
   "devDependencies": {
+    "firebase": "^11.4.0",
     "jsdom": "^30.1.3"
   }
 }
